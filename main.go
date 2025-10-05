@@ -59,6 +59,7 @@ func main() {
 	// Routes with CORS
 	http.HandleFunc("/", corsMiddleware(rootHandler))
 	http.HandleFunc("/game", corsMiddleware(gameHandler))
+	http.HandleFunc("/game/", corsMiddleware(gameByIDHandler))
 	http.HandleFunc("/register", corsMiddleware(registerHandler))
 	http.HandleFunc("/login", corsMiddleware(loginHandler))
 	http.HandleFunc("/me", corsMiddleware(authMiddleware(meHandler)))
@@ -147,6 +148,35 @@ func gameHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(games)
+}
+
+func gameByIDHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// ดึง id จาก URL
+	idStr := r.URL.Path[len("/game/"):] // "/game/16" -> "16"
+	var g Game
+	var releaseDate sql.NullString
+	err := db.QueryRow("SELECT id, name, price, category_id, image_url, description, release_date FROM games WHERE id=?", idStr).
+		Scan(&g.ID, &g.Name, &g.Price, &g.CategoryID, &g.ImageURL, &g.Description, &releaseDate)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Game not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if releaseDate.Valid {
+		g.ReleaseDate = releaseDate.String
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(g)
 }
 
 // ================== Auth Middleware ==================
