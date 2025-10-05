@@ -83,6 +83,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "*") // Dev: allow all, production: restrict domain
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true") // ต้องมี
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
