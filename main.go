@@ -56,28 +56,42 @@ func main() {
 		os.Mkdir("uploads", 0755)
 	}
 
-	// Routes
-	http.HandleFunc("/", rootHandler)
-	http.HandleFunc("/game", gameHandler)
-	http.HandleFunc("/register", registerHandler)
-	http.HandleFunc("/login", loginHandler)
-	http.HandleFunc("/me", authMiddleware(meHandler))
-	http.HandleFunc("/me/update", authMiddleware(updateMeHandler))
-	http.HandleFunc("/me/upload", authMiddleware(uploadAvatarHandler))
-	http.HandleFunc("/admin/users", authMiddleware(adminUsersHandler))
+	// Routes with CORS
+	http.HandleFunc("/", corsMiddleware(rootHandler))
+	http.HandleFunc("/game", corsMiddleware(gameHandler))
+	http.HandleFunc("/register", corsMiddleware(registerHandler))
+	http.HandleFunc("/login", corsMiddleware(loginHandler))
+	http.HandleFunc("/me", corsMiddleware(authMiddleware(meHandler)))
+	http.HandleFunc("/me/update", corsMiddleware(authMiddleware(updateMeHandler)))
+	http.HandleFunc("/me/upload", corsMiddleware(authMiddleware(uploadAvatarHandler)))
+	http.HandleFunc("/admin/users", corsMiddleware(authMiddleware(adminUsersHandler)))
 
-	// Serve static files from uploads folder
+	// Serve uploads folder (no CORS needed)
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
-	// หา IP ของเครื่องเพื่อโชว์ URL
 	ip := getLocalIP()
 	fmt.Println("🚀 Server started at http://" + ip + ":8080")
 
-	// Bind ทุก interface
 	log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
 }
 
-// ================== ฟังก์ชันหา IP ==================
+// ================== CORS Middleware ==================
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*") // Dev: allow all, production: restrict domain
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	}
+}
+
+// ================== IP Finder ==================
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -160,14 +174,23 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// รองรับ JSON หรือ FormData
 	var input struct {
 		Username string `json:"username"`
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "application/json" || contentType == "application/json; charset=utf-8" {
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
+		input.Username = r.FormValue("username")
+		input.Email = r.FormValue("email")
+		input.Password = r.FormValue("password")
 	}
 
 	var exists int
@@ -237,25 +260,25 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 // ================== Profile ==================
 func meHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		userID := r.Header.Get("X-User-ID")
-		var u User
-		var avatar sql.NullString
-		err := db.QueryRow("SELECT id, username, email, avatar_url, role, wallet_balance FROM users WHERE id = ?", userID).
-			Scan(&u.ID, &u.Username, &u.Email, &avatar, &u.Role, &u.WalletBalance)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if avatar.Valid {
-			u.AvatarURL = avatar.String
-		} else {
-			u.AvatarURL = ""
-		}
-		json.NewEncoder(w).Encode(u)
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	userID := r.Header.Get("X-User-ID")
+	var u User
+	var avatar sql.NullString
+	err := db.QueryRow("SELECT id, username, email, avatar_url, role, wallet_balance FROM users WHERE id = ?", userID).
+		Scan(&u.ID, &u.Username, &u.Email, &avatar, &u.Role, &u.WalletBalance)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if avatar.Valid {
+		u.AvatarURL = avatar.String
+	} else {
+		u.AvatarURL = ""
+	}
+	json.NewEncoder(w).Encode(u)
 }
 
 // ================== Update User ==================
@@ -289,7 +312,6 @@ func uploadAvatarHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	userID := r.Header.Get("X-User-ID")
 
 	file, header, err := r.FormFile("avatar")
