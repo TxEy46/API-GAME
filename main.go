@@ -224,8 +224,8 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Identifier string `json:"identifier"` // username หรือ email
+		Password   string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -233,45 +233,36 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var id int
-	var hashed, role, avatar sql.NullString
-	err := db.QueryRow("SELECT id, password_hash, role, avatar_url FROM users WHERE email = ?", input.Email).
-		Scan(&id, &hashed, &role, &avatar)
+	var hashed, role string
+	err := db.QueryRow(
+		"SELECT id, password_hash, role FROM users WHERE email = ? OR username = ?",
+		input.Identifier, input.Identifier,
+	).Scan(&id, &hashed, &role)
 	if err != nil {
-		http.Error(w, "Email or password incorrect", http.StatusUnauthorized)
+		http.Error(w, "Username or email incorrect", http.StatusUnauthorized)
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(hashed.String), []byte(input.Password)); err != nil {
-		http.Error(w, "Email or password incorrect", http.StatusUnauthorized)
+	if err := bcrypt.CompareHashAndPassword([]byte(hashed), []byte(input.Password)); err != nil {
+		http.Error(w, "Password incorrect", http.StatusUnauthorized)
 		return
 	}
 
+	// สร้าง session
 	sessionID := fmt.Sprintf("%d_%d", id, time.Now().UnixNano())
 	sessions[sessionID] = id
 
 	http.SetCookie(w, &http.Cookie{
-		Name:    "session_id",
-		Value:   sessionID,
-		Path:    "/",
-		Expires: time.Now().Add(24 * time.Hour),
+		Name:     "session_id",
+		Value:    sessionID,
+		Path:     "/",
+		Expires:  time.Now().Add(24 * time.Hour),
+		HttpOnly: true,
 	})
 
-	avatarURL := ""
-	if avatar.Valid {
-		avatarURL = avatar.String
-	}
-
-	// ส่ง user และ token กลับ
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]string{
 		"message": "Login successful",
-		"role":    role.String,
-		"user": map[string]interface{}{
-			"id":         id,
-			"email":      input.Email,
-			"role":       role.String,
-			"avatar_url": avatarURL,
-		},
-		"token": sessionID,
+		"role":    role,
 	})
 }
 
