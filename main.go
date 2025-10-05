@@ -66,6 +66,7 @@ func main() {
 	http.HandleFunc("/me/update", corsMiddleware(authMiddleware(updateMeHandler)))
 	http.HandleFunc("/me/upload", corsMiddleware(authMiddleware(uploadAvatarHandler)))
 	http.HandleFunc("/admin/users", corsMiddleware(authMiddleware(adminUsersHandler)))
+	http.HandleFunc("/admin/game/upload", corsMiddleware(authMiddleware(adminUploadGameImageHandler)))
 
 	// Serve uploads folder (no CORS needed)
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
@@ -413,4 +414,57 @@ func adminUsersHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(users)
+}
+
+func adminUploadGameImageHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := r.Header.Get("X-User-ID")
+
+	// ตรวจสอบว่าเป็น admin
+	var role string
+	err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
+	if err != nil || role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// ดึง game_id จาก FormValue
+	gameID := r.FormValue("game_id")
+	if gameID == "" {
+		http.Error(w, "Missing game_id", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		http.Error(w, "No file uploaded", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	ext := filepath.Ext(header.Filename)
+	filename := fmt.Sprintf("game_%s%s", gameID, ext)
+	out, err := os.Create(filepath.Join("uploads", filename))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer out.Close()
+	io.Copy(out, file)
+
+	imageURL := "/uploads/" + filename
+	_, err = db.Exec("UPDATE games SET image_url=? WHERE id=?", imageURL, gameID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"message":   "Game image uploaded",
+		"image_url": imageURL,
+	})
 }
