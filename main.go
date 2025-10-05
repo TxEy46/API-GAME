@@ -233,14 +233,15 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var id int
-	var hashed, role string
-	err := db.QueryRow("SELECT id, password_hash, role FROM users WHERE email = ?", input.Email).Scan(&id, &hashed, &role)
+	var hashed, role, avatar sql.NullString
+	err := db.QueryRow("SELECT id, password_hash, role, avatar_url FROM users WHERE email = ?", input.Email).
+		Scan(&id, &hashed, &role, &avatar)
 	if err != nil {
 		http.Error(w, "Email or password incorrect", http.StatusUnauthorized)
 		return
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(hashed), []byte(input.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(hashed.String), []byte(input.Password)); err != nil {
 		http.Error(w, "Email or password incorrect", http.StatusUnauthorized)
 		return
 	}
@@ -255,7 +256,23 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		Expires: time.Now().Add(24 * time.Hour),
 	})
 
-	json.NewEncoder(w).Encode(map[string]string{"message": "Login successful", "role": role})
+	avatarURL := ""
+	if avatar.Valid {
+		avatarURL = avatar.String
+	}
+
+	// ส่ง user และ token กลับ
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Login successful",
+		"role":    role.String,
+		"user": map[string]interface{}{
+			"id":         id,
+			"email":      input.Email,
+			"role":       role.String,
+			"avatar_url": avatarURL,
+		},
+		"token": sessionID,
+	})
 }
 
 // ================== Profile ==================
