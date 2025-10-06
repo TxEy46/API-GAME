@@ -20,9 +20,8 @@ import (
 )
 
 var db *sql.DB
-var jwtSecret = []byte("your_secret_key_here") // เปลี่ยนเป็น secret ของคุณเอง
+var jwtSecret = []byte("your_secret_key_here")
 
-// ================== Data Structures ==================
 type User struct {
 	ID            int     `json:"id"`
 	Username      string  `json:"username"`
@@ -42,104 +41,12 @@ type Game struct {
 	ReleaseDate string  `json:"release_date"`
 }
 
-type Category struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-}
-
-type DiscountCode struct {
-	ID               int     `json:"id"`
-	Code             string  `json:"code"`
-	Type             string  `json:"type"` // percent, fixed
-	Value            float64 `json:"value"`
-	UsageLimit       int     `json:"usage_limit"`
-	MinTotal         float64 `json:"min_total"`
-	StartDate        string  `json:"start_date"`
-	EndDate          string  `json:"end_date"`
-	SingleUsePerUser bool    `json:"single_use_per_user"`
-	Active           int     `json:"active"` // 0 or 1
-}
-
-type Cart struct {
-	ID        int        `json:"id"`
-	UserID    int        `json:"user_id"`
-	CreatedAt string     `json:"created_at"`
-	Items     []CartItem `json:"items"`
-}
-
-type CartItem struct {
-	ID       int `json:"id"`
-	CartID   int `json:"cart_id"`
-	GameID   int `json:"game_id"`
-	Quantity int `json:"quantity"`
-}
-
-type Purchase struct {
-	ID             int     `json:"id"`
-	UserID         int     `json:"user_id"`
-	PurchaseDate   string  `json:"purchase_date"`
-	TotalAmount    float64 `json:"total_amount"`
-	DiscountCodeID *int    `json:"discount_code_id"`
-	FinalAmount    float64 `json:"final_amount"`
-}
-
-type PurchaseItem struct {
-	ID              int     `json:"id"`
-	PurchaseID      int     `json:"purchase_id"`
-	GameID          int     `json:"game_id"`
-	PriceAtPurchase float64 `json:"price_at_purchase"`
-}
-
-type PurchasedGame struct {
-	ID          int    `json:"id"`
-	UserID      int    `json:"user_id"`
-	GameID      int    `json:"game_id"`
-	PurchasedAt string `json:"purchased_at"`
-}
-
-type Transaction struct {
-	ID              int     `json:"id"`
-	UserID          int     `json:"user_id"`
-	Username        string  `json:"username"`
-	GameID          int     `json:"game_id"`
-	GameName        string  `json:"game_name"`
-	Amount          float64 `json:"amount"`
-	TransactionDate string  `json:"transaction_date"`
-	Status          string  `json:"status"`
-	PaymentMethod   string  `json:"payment_method"`
-}
-
-type UserTransaction struct {
-	ID          int     `json:"id"`
-	UserID      int     `json:"user_id"`
-	Type        string  `json:"type"` // deposit, purchase
-	Amount      float64 `json:"amount"`
-	Description string  `json:"description"`
-	CreatedAt   string  `json:"created_at"`
-}
-
-type Ranking struct {
-	ID           int `json:"id"`
-	GameID       int `json:"game_id"`
-	SalesCount   int `json:"sales_count"`
-	RankPosition int `json:"rank_position"`
-}
-
-type UserDiscountCode struct {
-	ID             int    `json:"id"`
-	UserID         int    `json:"user_id"`
-	DiscountCodeID int    `json:"discount_code_id"`
-	UsedAt         string `json:"used_at"`
-}
-
-// ================== JWT Claims ==================
 type Claims struct {
 	UserID int    `json:"user_id"`
 	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
-// ================== Main ==================
 func main() {
 	var err error
 	dsn := "65011212151:TxEy2003122@tcp(202.28.34.210:3309)/db65011212151"
@@ -158,39 +65,41 @@ func main() {
 		os.Mkdir("uploads", 0755)
 	}
 
-	// Routes
+	// ================== Routes ==================
 	http.HandleFunc("/", corsMiddleware(rootHandler))
 	http.HandleFunc("/game", corsMiddleware(gameHandler))
 	http.HandleFunc("/game/", corsMiddleware(gameByIDHandler))
 	http.HandleFunc("/register", corsMiddleware(registerHandler))
 	http.HandleFunc("/login", corsMiddleware(loginHandler))
 	http.HandleFunc("/me", corsMiddleware(authMiddleware(meHandler)))
+	http.HandleFunc("/me/update", corsMiddleware(authMiddleware(updateProfileHandler)))
 	http.HandleFunc("/admin/users", corsMiddleware(authMiddleware(adminUsersHandler)))
 	http.HandleFunc("/admin/game/upload", corsMiddleware(authMiddleware(adminUploadGameImageHandler)))
 	http.HandleFunc("/categories", corsMiddleware(categoriesHandler))
-	http.HandleFunc("/admin/discount-codes", corsMiddleware(authMiddleware(adminDiscountCodesHandler)))
-	http.HandleFunc("/admin/discount-codes/", corsMiddleware(authMiddleware(adminDiscountCodeByIDHandler)))
-	http.HandleFunc("/admin/transactions", corsMiddleware(authMiddleware(adminTransactionsHandler)))
-	http.HandleFunc("/game/admin", corsMiddleware(authMiddleware(gameAdminHandler)))
-	http.HandleFunc("/game/admin/", corsMiddleware(authMiddleware(gameAdminByIDHandler)))
+	http.HandleFunc("/wallet/", corsMiddleware(authMiddleware(walletHandler)))
+	http.HandleFunc("/cart/", corsMiddleware(authMiddleware(cartHandler)))
+	http.HandleFunc("/cart/add", corsMiddleware(authMiddleware(addToCartHandler)))
+	http.HandleFunc("/cart/remove", corsMiddleware(authMiddleware(removeFromCartHandler)))
+	http.HandleFunc("/cart/clear", corsMiddleware(authMiddleware(clearCartHandler)))
+	http.HandleFunc("/game/admin", corsMiddleware(authMiddleware(adminGameHandler)))
+	http.HandleFunc("/game/admin/", corsMiddleware(authMiddleware(adminGameHandler)))
+
+	// Serve uploads folder
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
-	http.HandleFunc("/me/update", corsMiddleware(authMiddleware(updateProfileHandler)))
 
 	ip := getLocalIP()
 	fmt.Println("🚀 Server started at http://" + ip + ":8080")
-	log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
+	log.Fatal(http.ListenAndServe("0.0.0.0:8081", nil))
 }
 
-// ================== CORS Middleware ==================
+// ================== Helpers ==================
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// อนุญาตเฉพาะ Angular dev server
 		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:4200")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-		// Preflight request
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -200,7 +109,6 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// ================== JWT Auth Middleware ==================
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tokenStr := ""
@@ -231,7 +139,6 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// ================== Helper ==================
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -247,6 +154,13 @@ func getLocalIP() string {
 	return "127.0.0.1"
 }
 
+func getFullURL(path string) string {
+	if path == "" {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:8080%s", getLocalIP(), path)
+}
+
 func getClaims(r *http.Request) *Claims {
 	if claims, ok := r.Context().Value("claims").(*Claims); ok {
 		return claims
@@ -255,7 +169,6 @@ func getClaims(r *http.Request) *Claims {
 }
 
 // ================== Handlers ==================
-// Root
 func rootHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -265,7 +178,6 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"message": "Game Shop API"})
 }
 
-// ================== Game ==================
 func gameHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -289,6 +201,7 @@ func gameHandler(w http.ResponseWriter, r *http.Request) {
 		if releaseDate.Valid {
 			g.ReleaseDate = releaseDate.String
 		}
+		g.ImageURL = getFullURL(g.ImageURL)
 		games = append(games, g)
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -316,127 +229,17 @@ func gameByIDHandler(w http.ResponseWriter, r *http.Request) {
 	if releaseDate.Valid {
 		g.ReleaseDate = releaseDate.String
 	}
+	g.ImageURL = getFullURL(g.ImageURL)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(g)
 }
 
-func gameAdminHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	claims := getClaims(r)
-	if claims.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	name := r.FormValue("name")
-	price := r.FormValue("price")
-	categoryID := r.FormValue("category_id")
-	description := r.FormValue("description")
-
-	if name == "" || price == "" || categoryID == "" {
-		http.Error(w, "Missing required fields", http.StatusBadRequest)
-		return
-	}
-
-	var imageURL string
-	file, header, err := r.FormFile("image")
-	if err == nil {
-		defer file.Close()
-		ext := filepath.Ext(header.Filename)
-		filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
-		out, err := os.Create(filepath.Join("uploads", filename))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer out.Close()
-		io.Copy(out, file)
-		imageURL = "/uploads/" + filename
-	}
-
-	// ================== แก้ตรงนี้ ==================
-	// ใส่ release_date เป็นวันที่ปัจจุบันเอง
-	result, err := db.Exec(
-		"INSERT INTO games (name, price, category_id, image_url, description, release_date) VALUES (?, ?, ?, ?, ?, ?)",
-		name, price, categoryID, imageURL, description, time.Now().Format("2006-01-02"),
-	)
-	// =============================================
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	id, _ := result.LastInsertId()
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":      id,
-		"message": "Game created successfully",
-	})
-}
-
-// ================== Admin Game By ID ==================
-func gameAdminByIDHandler(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	if claims.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	idStr := strings.Trim(r.URL.Path[len("/game/admin/"):], "/") // trim slash
-
-	switch r.Method {
-	case http.MethodPut:
-		// ปรับ: ไม่อัพเดต release_date
-		var input struct {
-			Name        string  `json:"name"`
-			Price       float64 `json:"price"`
-			CategoryID  int     `json:"category_id"`
-			Description string  `json:"description"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		_, err := db.Exec(
-			"UPDATE games SET name=?, price=?, category_id=?, description=? WHERE id=?",
-			input.Name, input.Price, input.CategoryID, input.Description, idStr,
-		)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"message": "Game updated successfully"})
-
-	case http.MethodDelete:
-		var purchaseCount int
-		db.QueryRow("SELECT COUNT(*) FROM purchased_games WHERE game_id = ?", idStr).Scan(&purchaseCount)
-		if purchaseCount > 0 {
-			http.Error(w, "Cannot delete game that has been purchased", http.StatusBadRequest)
-			return
-		}
-		_, err := db.Exec("DELETE FROM games WHERE id=?", idStr)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"message": "Game deleted successfully"})
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// ================== Register & Login ==================
 func registerHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// ดึง form-data
 	username := r.FormValue("username")
 	email := r.FormValue("email")
 	password := r.FormValue("password")
@@ -453,7 +256,6 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// อัปโหลด avatar ถ้ามี
 	avatarURL := ""
 	file, header, err := r.FormFile("avatar")
 	if err == nil {
@@ -470,10 +272,8 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		avatarURL = "/uploads/" + filename
 	}
 
-	// Hash password
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 
-	// Insert user
 	_, err = db.Exec("INSERT INTO users (username, email, password_hash, role, avatar_url) VALUES (?, ?, ?, 'user', ?)",
 		username, email, string(hashed), avatarURL)
 	if err != nil {
@@ -483,7 +283,7 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]string{
 		"message":    "User registered successfully",
-		"avatar_url": avatarURL,
+		"avatar_url": getFullURL(avatarURL),
 	})
 }
 
@@ -493,7 +293,7 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Identifier string `json:"identifier"` // username หรือ email
+		Identifier string `json:"identifier"`
 		Password   string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -531,7 +331,6 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ================== Profile ==================
 func meHandler(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
 	var u User
@@ -542,134 +341,12 @@ func meHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if avatar.Valid {
-		u.AvatarURL = avatar.String
+	if avatar.Valid && avatar.String != "" {
+		u.AvatarURL = getFullURL(avatar.String)
 	} else {
 		u.AvatarURL = ""
 	}
 	json.NewEncoder(w).Encode(u)
-}
-
-// ================== Admin Users ==================
-func adminUsersHandler(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	if claims.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	rows, _ := db.Query("SELECT id, username, email, role, wallet_balance FROM users")
-	defer rows.Close()
-	var users []User
-	for rows.Next() {
-		var u User
-		rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.WalletBalance)
-		users = append(users, u)
-	}
-	json.NewEncoder(w).Encode(users)
-}
-
-// ================== Admin Upload Game Image ==================
-func adminUploadGameImageHandler(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	if claims.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	file, header, err := r.FormFile("image")
-	if err != nil {
-		http.Error(w, "No file uploaded", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	ext := filepath.Ext(header.Filename)
-	filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
-	out, _ := os.Create(filepath.Join("uploads", filename))
-	defer out.Close()
-	io.Copy(out, file)
-
-	json.NewEncoder(w).Encode(map[string]string{"message": "Game image uploaded", "image_url": "/uploads/" + filename})
-}
-
-// ================== Categories ==================
-func categoriesHandler(w http.ResponseWriter, r *http.Request) {
-	rows, _ := db.Query("SELECT id, name FROM categories")
-	defer rows.Close()
-	var cats []Category
-	for rows.Next() {
-		var c Category
-		rows.Scan(&c.ID, &c.Name)
-		cats = append(cats, c)
-	}
-	json.NewEncoder(w).Encode(cats)
-}
-
-// ================== Admin Discount Codes ==================
-func adminDiscountCodesHandler(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	if claims.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	rows, _ := db.Query("SELECT id, code, type, value, usage_limit, min_total, start_date, end_date, single_use_per_user, active FROM discount_codes")
-	defer rows.Close()
-	var codes []DiscountCode
-	for rows.Next() {
-		var d DiscountCode
-		var startDate, endDate sql.NullString
-		rows.Scan(&d.ID, &d.Code, &d.Type, &d.Value, &d.UsageLimit, &d.MinTotal, &startDate, &endDate, &d.SingleUsePerUser, &d.Active)
-		if startDate.Valid {
-			d.StartDate = startDate.String
-		}
-		if endDate.Valid {
-			d.EndDate = endDate.String
-		}
-		codes = append(codes, d)
-	}
-	json.NewEncoder(w).Encode(codes)
-}
-
-func adminDiscountCodeByIDHandler(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	if claims.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	// ตัวอย่าง: /admin/discount-codes/1
-	idStr := r.URL.Path[len("/admin/discount-codes/"):]
-	var d DiscountCode
-	var startDate, endDate sql.NullString
-	err := db.QueryRow("SELECT id, code, type, value, usage_limit, min_total, start_date, end_date, single_use_per_user, active FROM discount_codes WHERE id=?", idStr).
-		Scan(&d.ID, &d.Code, &d.Type, &d.Value, &d.UsageLimit, &d.MinTotal, &startDate, &endDate, &d.SingleUsePerUser, &d.Active)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	if startDate.Valid {
-		d.StartDate = startDate.String
-	}
-	if endDate.Valid {
-		d.EndDate = endDate.String
-	}
-	json.NewEncoder(w).Encode(d)
-}
-
-// ================== Admin Transactions ==================
-func adminTransactionsHandler(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r)
-	if claims.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	rows, _ := db.Query("SELECT t.id, t.user_id, u.username, t.game_id, g.name, t.amount, t.transaction_date, t.status, t.payment_method FROM transactions t JOIN users u ON t.user_id=u.id JOIN games g ON t.game_id=g.id")
-	defer rows.Close()
-	var txs []Transaction
-	for rows.Next() {
-		var t Transaction
-		rows.Scan(&t.ID, &t.UserID, &t.Username, &t.GameID, &t.GameName, &t.Amount, &t.TransactionDate, &t.Status, &t.PaymentMethod)
-		txs = append(txs, t)
-	}
-	json.NewEncoder(w).Encode(txs)
 }
 
 func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
@@ -683,24 +360,38 @@ func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	password := r.FormValue("password")
 
-	// อัปโหลด avatar ถ้ามี
-	avatarURL := ""
+	var avatarURL string
+
+	// ตรวจสอบและบันทึกไฟล์ avatar
 	file, header, err := r.FormFile("avatar")
 	if err == nil {
 		defer file.Close()
 		ext := filepath.Ext(header.Filename)
-		filename := fmt.Sprintf("user_%d%s", claims.UserID, ext)
-		out, err := os.Create(filepath.Join("uploads", filename))
+		filename := fmt.Sprintf("user_%d_%d%s", claims.UserID, time.Now().UnixNano(), ext)
+		filepath := filepath.Join("uploads", filename)
+
+		out, err := os.Create(filepath)
 		if err != nil {
+			log.Println("Failed to create file:", err)
 			http.Error(w, "Failed to save avatar", http.StatusInternalServerError)
 			return
 		}
 		defer out.Close()
-		io.Copy(out, file)
+
+		n, err := io.Copy(out, file)
+		if err != nil || n == 0 {
+			log.Println("Failed to write file:", err)
+			http.Error(w, "Failed to save avatar", http.StatusInternalServerError)
+			return
+		}
+
 		avatarURL = "/uploads/" + filename
+		log.Println("Avatar saved:", filepath)
+	} else {
+		log.Println("No avatar uploaded:", err)
 	}
 
-	// สร้าง dynamic query สำหรับ update field ที่มี
+	// เตรียม query update
 	queryParts := []string{"username=?", "email=?"}
 	args := []interface{}{username, email}
 
@@ -720,12 +411,374 @@ func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 	_, err = db.Exec(query, args...)
 	if err != nil {
+		log.Println("Failed to update profile:", err)
 		http.Error(w, "Failed to update profile", http.StatusInternalServerError)
 		return
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{
 		"message":    "Profile updated successfully",
-		"avatar_url": avatarURL,
+		"avatar_url": getFullURL(avatarURL),
 	})
+}
+
+func adminUsersHandler(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	if claims.Role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	rows, _ := db.Query("SELECT id, username, email, role, wallet_balance FROM users")
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var u User
+		rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &u.WalletBalance)
+		users = append(users, u)
+	}
+	json.NewEncoder(w).Encode(users)
+}
+
+func adminUploadGameImageHandler(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	if claims.Role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	file, header, err := r.FormFile("image")
+	if err != nil {
+		http.Error(w, "No file uploaded", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	ext := filepath.Ext(header.Filename)
+	filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
+	out, _ := os.Create(filepath.Join("uploads", filename))
+	defer out.Close()
+	io.Copy(out, file)
+
+	json.NewEncoder(w).Encode(map[string]string{"message": "Game image uploaded", "image_url": getFullURL("/uploads/" + filename)})
+}
+
+func categoriesHandler(w http.ResponseWriter, r *http.Request) {
+	rows, _ := db.Query("SELECT id, name FROM categories")
+	defer rows.Close()
+	var cats []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var name string
+		rows.Scan(&id, &name)
+		cats = append(cats, map[string]interface{}{"id": id, "name": name})
+	}
+	json.NewEncoder(w).Encode(cats)
+}
+
+// ================== Wallet Handler ==================
+func walletHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := getClaims(r)
+	userID := claims.UserID
+
+	// ตรวจสอบว่า user พยายามเข้าถึง wallet ของตัวเองหรือไม่
+	pathUserID := r.URL.Path[len("/wallet/"):]
+	if pathUserID != fmt.Sprintf("%d", userID) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	var walletBalance float64
+	err := db.QueryRow("SELECT wallet_balance FROM users WHERE id = ?", userID).Scan(&walletBalance)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"wallet_balance": walletBalance,
+	})
+}
+
+// ================== Cart Handlers ==================
+func cartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := getClaims(r)
+	userID := claims.UserID
+
+	// ตรวจสอบว่า user พยายามเข้าถึง cart ของตัวเองหรือไม่
+	pathUserID := r.URL.Path[len("/cart/"):]
+	if pathUserID != fmt.Sprintf("%d", userID) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	rows, err := db.Query(`
+		SELECT c.game_id, g.name, g.price, g.image_url, c.quantity 
+		FROM cart c 
+		JOIN games g ON c.game_id = g.id 
+		WHERE c.user_id = ?
+	`, userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var cartItems []map[string]interface{}
+	for rows.Next() {
+		var gameID, quantity int
+		var name string
+		var price float64
+		var imageURL sql.NullString
+
+		err := rows.Scan(&gameID, &name, &price, &imageURL, &quantity)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		item := map[string]interface{}{
+			"game_id":  gameID,
+			"name":     name,
+			"price":    price,
+			"quantity": quantity,
+		}
+
+		if imageURL.Valid {
+			item["image_url"] = getFullURL(imageURL.String)
+		} else {
+			item["image_url"] = ""
+		}
+
+		cartItems = append(cartItems, item)
+	}
+
+	json.NewEncoder(w).Encode(cartItems)
+}
+
+func addToCartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := getClaims(r)
+	var input struct {
+		UserID   int `json:"user_id"`
+		GameID   int `json:"game_id"`
+		Quantity int `json:"quantity"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// ตรวจสอบว่า user พยายามเพิ่มสินค้าใน cart ของตัวเอง
+	if input.UserID != claims.UserID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// ตรวจสอบว่ามีเกมนี้อยู่หรือไม่
+	var gameExists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM games WHERE id = ?)", input.GameID).Scan(&gameExists)
+	if err != nil || !gameExists {
+		http.Error(w, "Game not found", http.StatusNotFound)
+		return
+	}
+
+	// ตรวจสอบว่ามีใน cart แล้วหรือไม่
+	var existingQuantity int
+	err = db.QueryRow("SELECT quantity FROM cart WHERE user_id = ? AND game_id = ?", input.UserID, input.GameID).Scan(&existingQuantity)
+
+	if err == sql.ErrNoRows {
+		// ยังไม่มีใน cart -> insert ใหม่
+		_, err = db.Exec("INSERT INTO cart (user_id, game_id, quantity) VALUES (?, ?, ?)",
+			input.UserID, input.GameID, input.Quantity)
+	} else if err == nil {
+		// มีอยู่แล้ว -> update quantity
+		_, err = db.Exec("UPDATE cart SET quantity = quantity + ? WHERE user_id = ? AND game_id = ?",
+			input.Quantity, input.UserID, input.GameID)
+	}
+
+	if err != nil {
+		http.Error(w, "Failed to add to cart", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"message": "Added to cart successfully"})
+}
+
+func removeFromCartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := getClaims(r)
+	var input struct {
+		UserID int `json:"user_id"`
+		GameID int `json:"game_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// ตรวจสอบว่า user พยาย่างลบสินค้าใน cart ของตัวเอง
+	if input.UserID != claims.UserID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	_, err := db.Exec("DELETE FROM cart WHERE user_id = ? AND game_id = ?", input.UserID, input.GameID)
+	if err != nil {
+		http.Error(w, "Failed to remove from cart", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"message": "Removed from cart successfully"})
+}
+
+func clearCartHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	claims := getClaims(r)
+	var input struct {
+		UserID int `json:"user_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// ตรวจสอบว่า user พยาย่างล้าง cart ของตัวเอง
+	if input.UserID != claims.UserID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	_, err := db.Exec("DELETE FROM cart WHERE user_id = ?", input.UserID)
+	if err != nil {
+		http.Error(w, "Failed to clear cart", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"message": "Cart cleared successfully"})
+}
+
+func adminGameHandler(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	if claims.Role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	var id int
+	idStr := strings.TrimPrefix(r.URL.Path, "/game/admin/")
+	if idStr != "" && idStr != "/game/admin" {
+		fmt.Sscanf(idStr, "%d", &id)
+	}
+
+	var err error
+
+	switch r.Method {
+	case http.MethodPost:
+		// เพิ่มเกมใหม่
+		name := r.FormValue("name")
+		price := r.FormValue("price")
+		categoryID := r.FormValue("category_id")
+		description := r.FormValue("description")
+
+		var imageURL string
+		file, header, err := r.FormFile("image")
+		if err == nil {
+			defer file.Close()
+			ext := filepath.Ext(header.Filename)
+			filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
+			out, _ := os.Create(filepath.Join("uploads", filename))
+			defer out.Close()
+			io.Copy(out, file)
+			imageURL = "/uploads/" + filename
+		}
+
+		_, err = db.Exec(`INSERT INTO games (name, price, category_id, description, image_url) VALUES (?, ?, ?, ?, ?)`,
+			name, price, categoryID, description, imageURL)
+
+	case http.MethodPut:
+		// แก้ไขเกม
+		if id <= 0 {
+			http.Error(w, "Missing game ID", http.StatusBadRequest)
+			return
+		}
+
+		name := r.FormValue("name")
+		price := r.FormValue("price")
+		categoryID := r.FormValue("category_id")
+		description := r.FormValue("description")
+
+		var imageURL string
+		file, header, err := r.FormFile("image")
+		if err == nil {
+			defer file.Close()
+			ext := filepath.Ext(header.Filename)
+			filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
+			out, _ := os.Create(filepath.Join("uploads", filename))
+			defer out.Close()
+			io.Copy(out, file)
+			imageURL = "/uploads/" + filename
+		}
+
+		if imageURL != "" {
+			_, err = db.Exec(`UPDATE games SET name=?, price=?, category_id=?, description=?, image_url=? WHERE id=?`,
+				name, price, categoryID, description, imageURL, id)
+		} else {
+			_, err = db.Exec(`UPDATE games SET name=?, price=?, category_id=?, description=? WHERE id=?`,
+				name, price, categoryID, description, id)
+		}
+
+	case http.MethodDelete:
+		// ลบเกม
+		if id <= 0 {
+			http.Error(w, "Missing game ID", http.StatusBadRequest)
+			return
+		}
+
+		_, err = db.Exec("DELETE FROM games WHERE id=?", id)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var message string
+	switch r.Method {
+	case http.MethodPost:
+		message = "Game added successfully"
+	case http.MethodPut:
+		message = "Game updated successfully"
+	case http.MethodDelete:
+		message = "Game deleted successfully"
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"message": message})
 }
