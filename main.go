@@ -487,7 +487,17 @@ func adminUsersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query("SELECT id, username, email, avatar_url, role, wallet_balance FROM users")
+	// รับ query parameter
+	includeAdmin := r.URL.Query().Get("includeAdmin")
+
+	var query string
+	if includeAdmin == "true" {
+		query = "SELECT id, username, email, avatar_url, role, wallet_balance FROM users"
+	} else {
+		query = "SELECT id, username, email, avatar_url, role, wallet_balance FROM users WHERE role != 'admin'"
+	}
+
+	rows, err := db.Query(query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
