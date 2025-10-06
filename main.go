@@ -435,27 +435,56 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var input struct {
-		Username string `json:"username"`
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+
+	// ดึง form-data
+	username := r.FormValue("username")
+	email := r.FormValue("email")
+	password := r.FormValue("password")
+
+	if username == "" || email == "" || password == "" {
+		http.Error(w, "Missing required fields", http.StatusBadRequest)
 		return
 	}
 
 	var exists int
-	db.QueryRow("SELECT COUNT(*) FROM users WHERE email = ?", input.Email).Scan(&exists)
+	db.QueryRow("SELECT COUNT(*) FROM users WHERE email = ?", email).Scan(&exists)
 	if exists > 0 {
 		http.Error(w, "Email already exists", http.StatusBadRequest)
 		return
 	}
 
-	hashed, _ := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
-	db.Exec("INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, 'user')",
-		input.Username, input.Email, string(hashed))
-	json.NewEncoder(w).Encode(map[string]string{"message": "User registered successfully"})
+	// อัปโหลด avatar ถ้ามี
+	avatarURL := ""
+	file, header, err := r.FormFile("avatar")
+	if err == nil {
+		defer file.Close()
+		ext := filepath.Ext(header.Filename)
+		filename := fmt.Sprintf("user_%d%s", time.Now().UnixNano(), ext)
+		out, err := os.Create(filepath.Join("uploads", filename))
+		if err != nil {
+			http.Error(w, "Failed to save avatar", http.StatusInternalServerError)
+			return
+		}
+		defer out.Close()
+		io.Copy(out, file)
+		avatarURL = "/uploads/" + filename
+	}
+
+	// Hash password
+	hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+
+	// Insert user
+	_, err = db.Exec("INSERT INTO users (username, email, password_hash, role, avatar_url) VALUES (?, ?, ?, 'user', ?)",
+		username, email, string(hashed), avatarURL)
+	if err != nil {
+		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"message":    "User registered successfully",
+		"avatar_url": avatarURL,
+	})
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
