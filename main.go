@@ -149,7 +149,6 @@ func main() {
 
 	// ✅ Routes (เพิ่ม authMiddleware ให้ game routes)
 	http.HandleFunc("/", corsMiddleware(rootHandler))
-	http.HandleFunc("/", corsMiddleware(rootHandler))
 	http.HandleFunc("/game", corsMiddleware(gameHandler))      // GET /game -> ทุกคนเข้าถึงได้
 	http.HandleFunc("/game/", corsMiddleware(gameByIDHandler)) // GET /game/:id -> ทุกคนเข้าถึงได้
 	http.HandleFunc("/register", corsMiddleware(registerHandler))
