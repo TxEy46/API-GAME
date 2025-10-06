@@ -147,10 +147,11 @@ func main() {
 		os.Mkdir("uploads", 0755)
 	}
 
-	// Routes with CORS
+	// ✅ Routes (เพิ่ม authMiddleware ให้ game routes)
 	http.HandleFunc("/", corsMiddleware(rootHandler))
-	http.HandleFunc("/game", corsMiddleware(gameHandler))
-	http.HandleFunc("/game/", corsMiddleware(gameByIDHandler))
+	http.HandleFunc("/game", corsMiddleware(authMiddleware(gameHandler)))      // ← เพิ่ม authMiddleware
+	http.HandleFunc("/game/", corsMiddleware(authMiddleware(gameByIDHandler))) // ← เพิ่ม authMiddleware
+
 	http.HandleFunc("/register", corsMiddleware(registerHandler))
 	http.HandleFunc("/login", corsMiddleware(loginHandler))
 	http.HandleFunc("/me", corsMiddleware(authMiddleware(meHandler)))
@@ -163,7 +164,7 @@ func main() {
 	http.HandleFunc("/admin/discount-codes/", corsMiddleware(authMiddleware(adminDiscountCodeByIDHandler)))
 	http.HandleFunc("/admin/transactions", corsMiddleware(authMiddleware(adminTransactionsHandler)))
 
-	// Serve uploads folder (no CORS needed)
+	// Serve uploads folder
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
 	ip := getLocalIP()
