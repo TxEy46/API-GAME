@@ -439,30 +439,30 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		userID, ok := sessions[cookie.Value]
 		if !ok {
 			fmt.Printf("❌ Session not found: %s\n", cookie.Value)
-			fmt.Printf("📋 All sessions: %+v\n", sessions)
+			fmt.Printf("📋 All active sessions: %+v\n", sessions)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		fmt.Printf("🔍 Session found: %s -> UserID: %d\n", cookie.Value, userID)
+		fmt.Printf("🔍 Session %s -> UserID: %d\n", cookie.Value, userID)
 
 		var role string
 		err = db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
 		if err != nil {
-			fmt.Printf("❌ User not found in DB: %d, error: %v\n", userID, err)
+			fmt.Printf("❌ Database error for user %d: %v\n", userID, err)
 			http.Error(w, "User not found", http.StatusUnauthorized)
 			return
 		}
 
-		fmt.Printf("🎯 User %d role: %s\n", userID, role)
+		fmt.Printf("🎯 User %d role from DB: %s\n", userID, role)
 
 		if role != "admin" {
-			fmt.Printf("🚫 Access denied - User %d is not admin (role: %s)\n", userID, role)
+			fmt.Printf("🚫 User %d is NOT admin (role: %s)\n", userID, role)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
 
-		fmt.Printf("✅ User %d (admin) authorized for: %s %s\n", userID, r.Method, r.URL.Path)
+		fmt.Printf("✅ User %d authorized as admin\n", userID)
 		r.Header.Set("X-User-ID", fmt.Sprintf("%d", userID))
 		next.ServeHTTP(w, r)
 	}
