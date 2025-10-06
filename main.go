@@ -149,9 +149,9 @@ func main() {
 
 	// ✅ Routes (เพิ่ม authMiddleware ให้ game routes)
 	http.HandleFunc("/", corsMiddleware(rootHandler))
-	http.HandleFunc("/game", corsMiddleware(authMiddleware(gameHandler))) // ← เพิ่ม authMiddleware
-	http.HandleFunc("/game/", corsMiddleware(gameByIDHandler))
-
+	http.HandleFunc("/", corsMiddleware(rootHandler))
+	http.HandleFunc("/game", corsMiddleware(gameHandler))      // GET /game -> ทุกคนเข้าถึงได้
+	http.HandleFunc("/game/", corsMiddleware(gameByIDHandler)) // GET /game/:id -> ทุกคนเข้าถึงได้
 	http.HandleFunc("/register", corsMiddleware(registerHandler))
 	http.HandleFunc("/login", corsMiddleware(loginHandler))
 	http.HandleFunc("/me", corsMiddleware(authMiddleware(meHandler)))
@@ -163,6 +163,8 @@ func main() {
 	http.HandleFunc("/admin/discount-codes", corsMiddleware(authMiddleware(adminDiscountCodesHandler)))
 	http.HandleFunc("/admin/discount-codes/", corsMiddleware(authMiddleware(adminDiscountCodeByIDHandler)))
 	http.HandleFunc("/admin/transactions", corsMiddleware(authMiddleware(adminTransactionsHandler)))
+	http.HandleFunc("/game/admin", corsMiddleware(authMiddleware(gameAdminHandler)))      // POST /game admin
+	http.HandleFunc("/game/admin/", corsMiddleware(authMiddleware(gameAdminByIDHandler))) // PUT/DELETE /game/:id admin
 
 	// Serve uploads folder
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
@@ -219,126 +221,134 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 
 // ================== Game Handler ==================
 func gameHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		// ดึงเกมทั้งหมด
-		rows, err := db.Query("SELECT id, name, price, category_id, image_url, description, release_date FROM games")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		defer rows.Close()
-
-		var games []Game
-		for rows.Next() {
-			var g Game
-			var releaseDate sql.NullString
-			if err := rows.Scan(&g.ID, &g.Name, &g.Price, &g.CategoryID, &g.ImageURL, &g.Description, &releaseDate); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if releaseDate.Valid {
-				g.ReleaseDate = releaseDate.String
-			}
-			games = append(games, g)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(games)
-
-	case http.MethodPost:
-		// สร้างเกมใหม่ (ต้องเป็น admin)
-		userID := r.Header.Get("X-User-ID")
-		var role string
-		err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
-		if err != nil || role != "admin" {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-
-		// รับข้อมูลจาก FormData
-		name := r.FormValue("name")
-		price := r.FormValue("price")
-		categoryID := r.FormValue("category_id")
-		description := r.FormValue("description")
-
-		if name == "" || price == "" || categoryID == "" {
-			http.Error(w, "Missing required fields", http.StatusBadRequest)
-			return
-		}
-
-		// อัพโหลดรูปภาพ (ถ้ามี)
-		var imageURL string
-		file, header, err := r.FormFile("image")
-		if err == nil {
-			defer file.Close()
-			ext := filepath.Ext(header.Filename)
-			filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
-			out, err := os.Create(filepath.Join("uploads", filename))
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			defer out.Close()
-			io.Copy(out, file)
-			imageURL = "/uploads/" + filename
-		}
-
-		// บันทึกลง database
-		result, err := db.Exec(
-			"INSERT INTO games (name, price, category_id, image_url, description) VALUES (?, ?, ?, ?, ?)",
-			name, price, categoryID, imageURL, description,
-		)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		id, _ := result.LastInsertId()
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":      id,
-			"message": "Game created successfully",
-		})
-
-	default:
+	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
-}
 
-func gameByIDHandler(w http.ResponseWriter, r *http.Request) {
-	idStr := r.URL.Path[len("/game/"):]
+	// ดึงเกมทั้งหมด
+	rows, err := db.Query("SELECT id, name, price, category_id, image_url, description, release_date FROM games")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
 
-	switch r.Method {
-	case http.MethodGet:
-		// ดึงเกมโดย ID
+	var games []Game
+	for rows.Next() {
 		var g Game
 		var releaseDate sql.NullString
-		err := db.QueryRow("SELECT id, name, price, category_id, image_url, description, release_date FROM games WHERE id=?", idStr).
-			Scan(&g.ID, &g.Name, &g.Price, &g.CategoryID, &g.ImageURL, &g.Description, &releaseDate)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				http.Error(w, "Game not found", http.StatusNotFound)
-			} else {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
+		if err := rows.Scan(&g.ID, &g.Name, &g.Price, &g.CategoryID, &g.ImageURL, &g.Description, &releaseDate); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if releaseDate.Valid {
 			g.ReleaseDate = releaseDate.String
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(g)
+		games = append(games, g)
+	}
 
-	case http.MethodPut:
-		// อัพเดทเกม (ต้องเป็น admin)
-		userID := r.Header.Get("X-User-ID")
-		var role string
-		err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
-		if err != nil || role != "admin" {
-			http.Error(w, "Forbidden", http.StatusForbidden)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(games)
+}
+
+func gameByIDHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	idStr := r.URL.Path[len("/game/"):]
+	var g Game
+	var releaseDate sql.NullString
+	err := db.QueryRow("SELECT id, name, price, category_id, image_url, description, release_date FROM games WHERE id=?", idStr).
+		Scan(&g.ID, &g.Name, &g.Price, &g.CategoryID, &g.ImageURL, &g.Description, &releaseDate)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Game not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	if releaseDate.Valid {
+		g.ReleaseDate = releaseDate.String
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(g)
+}
+
+func gameAdminHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := r.Header.Get("X-User-ID")
+	var role string
+	err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
+	if err != nil || role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// รับข้อมูลจาก FormData
+	name := r.FormValue("name")
+	price := r.FormValue("price")
+	categoryID := r.FormValue("category_id")
+	description := r.FormValue("description")
+
+	if name == "" || price == "" || categoryID == "" {
+		http.Error(w, "Missing required fields", http.StatusBadRequest)
+		return
+	}
+
+	var imageURL string
+	file, header, err := r.FormFile("image")
+	if err == nil {
+		defer file.Close()
+		ext := filepath.Ext(header.Filename)
+		filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
+		out, err := os.Create(filepath.Join("uploads", filename))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		defer out.Close()
+		io.Copy(out, file)
+		imageURL = "/uploads/" + filename
+	}
 
-		// รับข้อมูลจาก FormData
+	result, err := db.Exec(
+		"INSERT INTO games (name, price, category_id, image_url, description) VALUES (?, ?, ?, ?, ?)",
+		name, price, categoryID, imageURL, description,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	id, _ := result.LastInsertId()
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":      id,
+		"message": "Game created successfully",
+	})
+}
+
+func gameAdminByIDHandler(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Path[len("/game/admin/"):]
+
+	userID := r.Header.Get("X-User-ID")
+	var role string
+	err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
+	if err != nil || role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		// อัพเดทเกม (เหมือนของเดิม)
 		name := r.FormValue("name")
 		price := r.FormValue("price")
 		categoryID := r.FormValue("category_id")
@@ -349,78 +359,34 @@ func gameByIDHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// อัพโหลดรูปภาพ (ถ้ามี)
 		file, header, err := r.FormFile("image")
 		if err == nil {
 			defer file.Close()
 			ext := filepath.Ext(header.Filename)
 			filename := fmt.Sprintf("game_%s%s", idStr, ext)
-			out, err := os.Create(filepath.Join("uploads", filename))
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+			out, _ := os.Create(filepath.Join("uploads", filename))
 			defer out.Close()
 			io.Copy(out, file)
 			imageURL := "/uploads/" + filename
-
-			// อัพเดทรูปภาพ
-			_, err = db.Exec(
-				"UPDATE games SET name=?, price=?, category_id=?, image_url=?, description=? WHERE id=?",
-				name, price, categoryID, imageURL, description, idStr,
-			)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+			db.Exec("UPDATE games SET name=?, price=?, category_id=?, image_url=?, description=? WHERE id=?",
+				name, price, categoryID, imageURL, description, idStr)
 		} else {
-			// อัพเดทโดยไม่เปลี่ยนรูปภาพ
-			_, err = db.Exec(
-				"UPDATE games SET name=?, price=?, category_id=?, description=? WHERE id=?",
-				name, price, categoryID, description, idStr,
-			)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+			db.Exec("UPDATE games SET name=?, price=?, category_id=?, description=? WHERE id=?",
+				name, price, categoryID, description, idStr)
 		}
 
-		json.NewEncoder(w).Encode(map[string]string{
-			"message": "Game updated successfully",
-		})
+		json.NewEncoder(w).Encode(map[string]string{"message": "Game updated successfully"})
 
 	case http.MethodDelete:
-		// ลบเกม (ต้องเป็น admin)
-		userID := r.Header.Get("X-User-ID")
-		var role string
-		err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
-		if err != nil || role != "admin" {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-
-		// ตรวจสอบว่ามีคนซื้อเกมนี้แล้วหรือยัง
+		// ลบเกม
 		var purchaseCount int
-		err = db.QueryRow("SELECT COUNT(*) FROM purchased_games WHERE game_id = ?", idStr).Scan(&purchaseCount)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
+		db.QueryRow("SELECT COUNT(*) FROM purchased_games WHERE game_id = ?", idStr).Scan(&purchaseCount)
 		if purchaseCount > 0 {
 			http.Error(w, "Cannot delete game that has been purchased", http.StatusBadRequest)
 			return
 		}
-
-		_, err = db.Exec("DELETE FROM games WHERE id=?", idStr)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		json.NewEncoder(w).Encode(map[string]string{
-			"message": "Game deleted successfully",
-		})
+		db.Exec("DELETE FROM games WHERE id=?", idStr)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Game deleted successfully"})
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
