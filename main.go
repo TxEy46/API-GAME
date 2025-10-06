@@ -322,7 +322,6 @@ func gameByIDHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(g)
 }
 
-// ================== Admin Game ==================
 func gameAdminHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -360,11 +359,14 @@ func gameAdminHandler(w http.ResponseWriter, r *http.Request) {
 		imageURL = "/uploads/" + filename
 	}
 
-	// ไม่ต้องส่ง release_date, DB จะใส่ current_date ให้เอง
+	// ================== แก้ตรงนี้ ==================
+	// ใส่ release_date เป็นวันที่ปัจจุบันเอง
 	result, err := db.Exec(
-		"INSERT INTO games (name, price, category_id, image_url, description) VALUES (?, ?, ?, ?, ?)",
-		name, price, categoryID, imageURL, description,
+		"INSERT INTO games (name, price, category_id, image_url, description, release_date) VALUES (?, ?, ?, ?, ?, ?)",
+		name, price, categoryID, imageURL, description, time.Now().Format("2006-01-02"),
 	)
+	// =============================================
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
