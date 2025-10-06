@@ -165,8 +165,6 @@ func main() {
 	http.HandleFunc("/register", corsMiddleware(registerHandler))
 	http.HandleFunc("/login", corsMiddleware(loginHandler))
 	http.HandleFunc("/me", corsMiddleware(authMiddleware(meHandler)))
-	http.HandleFunc("/me/update", corsMiddleware(authMiddleware(updateMeHandler)))
-	http.HandleFunc("/me/upload", corsMiddleware(authMiddleware(uploadAvatarHandler)))
 	http.HandleFunc("/admin/users", corsMiddleware(authMiddleware(adminUsersHandler)))
 	http.HandleFunc("/admin/game/upload", corsMiddleware(authMiddleware(adminUploadGameImageHandler)))
 	http.HandleFunc("/categories", corsMiddleware(categoriesHandler))
@@ -176,7 +174,7 @@ func main() {
 	http.HandleFunc("/game/admin", corsMiddleware(authMiddleware(gameAdminHandler)))
 	http.HandleFunc("/game/admin/", corsMiddleware(authMiddleware(gameAdminByIDHandler)))
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
-	http.HandleFunc("/me/update-with-avatar", corsMiddleware(authMiddleware(updateProfileHandler)))
+	http.HandleFunc("/me/update", corsMiddleware(authMiddleware(updateProfileHandler)))
 
 	ip := getLocalIP()
 	fmt.Println("🚀 Server started at http://" + ip + ":8080")
@@ -523,49 +521,6 @@ func meHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(u)
 }
 
-func updateMeHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	claims := getClaims(r)
-	var input struct {
-		Username string `json:"username"`
-		Email    string `json:"email"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	db.Exec("UPDATE users SET username=?, email=? WHERE id=?", input.Username, input.Email, claims.UserID)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Profile updated successfully"})
-}
-
-func uploadAvatarHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	claims := getClaims(r)
-
-	file, header, err := r.FormFile("avatar")
-	if err != nil {
-		http.Error(w, "No file uploaded", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	ext := filepath.Ext(header.Filename)
-	filename := fmt.Sprintf("user_%d%s", claims.UserID, ext)
-	out, _ := os.Create(filepath.Join("uploads", filename))
-	defer out.Close()
-	io.Copy(out, file)
-
-	avatarURL := "/uploads/" + filename
-	db.Exec("UPDATE users SET avatar_url=? WHERE id=?", avatarURL, claims.UserID)
-	json.NewEncoder(w).Encode(map[string]string{"message": "Avatar uploaded", "avatar_url": avatarURL})
-}
-
 // ================== Admin Users ==================
 func adminUsersHandler(w http.ResponseWriter, r *http.Request) {
 	claims := getClaims(r)
@@ -699,34 +654,49 @@ func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	email := r.FormValue("email")
 	password := r.FormValue("password")
 
-	// อัปเดต avatar ถ้ามี
-	file, header, err := r.FormFile("avatar")
+	// อัปโหลด avatar ถ้ามี
 	avatarURL := ""
+	file, header, err := r.FormFile("avatar")
 	if err == nil {
 		defer file.Close()
 		ext := filepath.Ext(header.Filename)
 		filename := fmt.Sprintf("user_%d%s", claims.UserID, ext)
-		out, _ := os.Create(filepath.Join("uploads", filename))
+		out, err := os.Create(filepath.Join("uploads", filename))
+		if err != nil {
+			http.Error(w, "Failed to save avatar", http.StatusInternalServerError)
+			return
+		}
 		defer out.Close()
 		io.Copy(out, file)
 		avatarURL = "/uploads/" + filename
 	}
 
-	// อัปเดตใน DB
-	if avatarURL != "" && password != "" {
-		hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-		db.Exec("UPDATE users SET username=?, email=?, avatar_url=?, password_hash=? WHERE id=?",
-			username, email, avatarURL, string(hashed), claims.UserID)
-	} else if avatarURL != "" {
-		db.Exec("UPDATE users SET username=?, email=?, avatar_url=? WHERE id=?",
-			username, email, avatarURL, claims.UserID)
-	} else if password != "" {
-		hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-		db.Exec("UPDATE users SET username=?, email=?, password_hash=? WHERE id=?",
-			username, email, string(hashed), claims.UserID)
-	} else {
-		db.Exec("UPDATE users SET username=?, email=? WHERE id=?", username, email, claims.UserID)
+	// สร้าง dynamic query สำหรับ update field ที่มี
+	queryParts := []string{"username=?", "email=?"}
+	args := []interface{}{username, email}
+
+	if avatarURL != "" {
+		queryParts = append(queryParts, "avatar_url=?")
+		args = append(args, avatarURL)
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{"message": "Profile updated successfully"})
+	if password != "" {
+		hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		queryParts = append(queryParts, "password_hash=?")
+		args = append(args, string(hashed))
+	}
+
+	args = append(args, claims.UserID)
+	query := fmt.Sprintf("UPDATE users SET %s WHERE id=?", strings.Join(queryParts, ", "))
+
+	_, err = db.Exec(query, args...)
+	if err != nil {
+		http.Error(w, "Failed to update profile", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"message":    "Profile updated successfully",
+		"avatar_url": avatarURL,
+	})
 }
