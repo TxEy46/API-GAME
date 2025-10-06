@@ -19,6 +19,7 @@ import (
 var db *sql.DB
 var sessions = map[string]int{} // sessionID -> userID
 
+// ================== Data Structures ==================
 type User struct {
 	ID            int     `json:"id"`
 	Username      string  `json:"username"`
@@ -36,6 +37,96 @@ type Game struct {
 	ImageURL    string  `json:"image_url"`
 	Description string  `json:"description"`
 	ReleaseDate string  `json:"release_date"`
+}
+
+type Category struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+type DiscountCode struct {
+	ID               int     `json:"id"`
+	Code             string  `json:"code"`
+	Type             string  `json:"type"` // percent, fixed
+	Value            float64 `json:"value"`
+	UsageLimit       int     `json:"usage_limit"`
+	MinTotal         float64 `json:"min_total"`
+	StartDate        string  `json:"start_date"`
+	EndDate          string  `json:"end_date"`
+	SingleUsePerUser bool    `json:"single_use_per_user"`
+	Active           int     `json:"active"` // 0 or 1
+}
+
+type Cart struct {
+	ID        int        `json:"id"`
+	UserID    int        `json:"user_id"`
+	CreatedAt string     `json:"created_at"`
+	Items     []CartItem `json:"items"`
+}
+
+type CartItem struct {
+	ID       int `json:"id"`
+	CartID   int `json:"cart_id"`
+	GameID   int `json:"game_id"`
+	Quantity int `json:"quantity"`
+}
+
+type Purchase struct {
+	ID             int     `json:"id"`
+	UserID         int     `json:"user_id"`
+	PurchaseDate   string  `json:"purchase_date"`
+	TotalAmount    float64 `json:"total_amount"`
+	DiscountCodeID *int    `json:"discount_code_id"`
+	FinalAmount    float64 `json:"final_amount"`
+}
+
+type PurchaseItem struct {
+	ID              int     `json:"id"`
+	PurchaseID      int     `json:"purchase_id"`
+	GameID          int     `json:"game_id"`
+	PriceAtPurchase float64 `json:"price_at_purchase"`
+}
+
+type PurchasedGame struct {
+	ID          int    `json:"id"`
+	UserID      int    `json:"user_id"`
+	GameID      int    `json:"game_id"`
+	PurchasedAt string `json:"purchased_at"`
+}
+
+type Transaction struct {
+	ID              int     `json:"id"`
+	UserID          int     `json:"user_id"`
+	Username        string  `json:"username"`
+	GameID          int     `json:"game_id"`
+	GameName        string  `json:"game_name"`
+	Amount          float64 `json:"amount"`
+	TransactionDate string  `json:"transaction_date"`
+	Status          string  `json:"status"`
+	PaymentMethod   string  `json:"payment_method"`
+}
+
+type UserTransaction struct {
+	ID          int     `json:"id"`
+	UserID      int     `json:"user_id"`
+	Type        string  `json:"type"` // deposit, purchase
+	Amount      float64 `json:"amount"`
+	Description string  `json:"description"`
+	CreatedAt   string  `json:"created_at"`
+}
+
+type Ranking struct {
+	ID           int `json:"id"`
+	GameID       int `json:"game_id"`
+	SalesCount   int `json:"sales_count"`
+	RankPosition int `json:"rank_position"`
+}
+
+type UserDiscountCode struct {
+	ID             int    `json:"id"`
+	UserID         int    `json:"user_id"`
+	DiscountCodeID int    `json:"discount_code_id"`
+	UsedAt         string `json:"used_at"`
 }
 
 func main() {
@@ -67,6 +158,10 @@ func main() {
 	http.HandleFunc("/me/upload", corsMiddleware(authMiddleware(uploadAvatarHandler)))
 	http.HandleFunc("/admin/users", corsMiddleware(authMiddleware(adminUsersHandler)))
 	http.HandleFunc("/admin/game/upload", corsMiddleware(authMiddleware(adminUploadGameImageHandler)))
+	http.HandleFunc("/categories", corsMiddleware(categoriesHandler))
+	http.HandleFunc("/admin/discount-codes", corsMiddleware(authMiddleware(adminDiscountCodesHandler)))
+	http.HandleFunc("/admin/discount-codes/", corsMiddleware(authMiddleware(adminDiscountCodeByIDHandler)))
+	http.HandleFunc("/admin/transactions", corsMiddleware(authMiddleware(adminTransactionsHandler)))
 
 	// Serve uploads folder (no CORS needed)
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
@@ -469,4 +564,249 @@ func adminUploadGameImageHandler(w http.ResponseWriter, r *http.Request) {
 		"message":   "Game image uploaded",
 		"image_url": imageURL,
 	})
+}
+
+// ================== Categories Handler ==================
+func categoriesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rows, err := db.Query("SELECT id, name FROM categories")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var categories []Category
+	for rows.Next() {
+		var c Category
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		categories = append(categories, c)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(categories)
+}
+
+// ================== Admin Discount Codes Handler ==================
+func adminDiscountCodesHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+	var role string
+	err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
+	if err != nil || role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := db.Query(`
+            SELECT id, code, type, value, usage_limit, min_total, 
+                   start_date, end_date, single_use_per_user, active 
+            FROM discount_codes
+        `)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var codes []DiscountCode
+		for rows.Next() {
+			var dc DiscountCode
+			var startDate, endDate sql.NullString
+			var singleUsePerUser, active int
+			err := rows.Scan(&dc.ID, &dc.Code, &dc.Type, &dc.Value, &dc.UsageLimit,
+				&dc.MinTotal, &startDate, &endDate, &singleUsePerUser, &active)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if startDate.Valid {
+				dc.StartDate = startDate.String
+			}
+			if endDate.Valid {
+				dc.EndDate = endDate.String
+			}
+			dc.SingleUsePerUser = singleUsePerUser == 1
+			dc.Active = active
+			codes = append(codes, dc)
+		}
+		json.NewEncoder(w).Encode(codes)
+
+	case http.MethodPost:
+		var input struct {
+			Code             string  `json:"code"`
+			Type             string  `json:"type"`
+			Value            float64 `json:"value"`
+			UsageLimit       int     `json:"usage_limit"`
+			MinTotal         float64 `json:"min_total"`
+			StartDate        string  `json:"start_date"`
+			EndDate          string  `json:"end_date"`
+			SingleUsePerUser bool    `json:"single_use_per_user"`
+			Active           int     `json:"active"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		singleUse := 0
+		if input.SingleUsePerUser {
+			singleUse = 1
+		}
+
+		result, err := db.Exec(`
+            INSERT INTO discount_codes 
+            (code, type, value, usage_limit, min_total, start_date, end_date, single_use_per_user, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			input.Code, input.Type, input.Value, input.UsageLimit, input.MinTotal,
+			input.StartDate, input.EndDate, singleUse, input.Active)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		id, _ := result.LastInsertId()
+		json.NewEncoder(w).Encode(map[string]interface{}{"id": id, "message": "Discount code created"})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// ================== Admin Discount Code By ID Handler ==================
+func adminDiscountCodeByIDHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+	var role string
+	err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
+	if err != nil || role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	idStr := r.URL.Path[len("/admin/discount-codes/"):]
+
+	switch r.Method {
+	case http.MethodPut:
+		var input struct {
+			Code             string  `json:"code"`
+			Type             string  `json:"type"`
+			Value            float64 `json:"value"`
+			UsageLimit       int     `json:"usage_limit"`
+			MinTotal         float64 `json:"min_total"`
+			StartDate        string  `json:"start_date"`
+			EndDate          string  `json:"end_date"`
+			SingleUsePerUser bool    `json:"single_use_per_user"`
+			Active           int     `json:"active"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		singleUse := 0
+		if input.SingleUsePerUser {
+			singleUse = 1
+		}
+
+		_, err := db.Exec(`
+            UPDATE discount_codes 
+            SET code=?, type=?, value=?, usage_limit=?, min_total=?, 
+                start_date=?, end_date=?, single_use_per_user=?, active=?
+            WHERE id=?`,
+			input.Code, input.Type, input.Value, input.UsageLimit, input.MinTotal,
+			input.StartDate, input.EndDate, singleUse, input.Active, idStr)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]string{"message": "Discount code updated"})
+
+	case http.MethodDelete:
+		_, err := db.Exec("DELETE FROM discount_codes WHERE id=?", idStr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"message": "Discount code deleted"})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// ================== Admin Transactions Handler ==================
+func adminTransactionsHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+	var role string
+	err := db.QueryRow("SELECT role FROM users WHERE id=?", userID).Scan(&role)
+	if err != nil || role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rows, err := db.Query(`
+        SELECT t.id, t.user_id, u.username, t.game_id, g.name, t.amount, 
+               t.transaction_date, t.status, t.payment_method
+        FROM transactions t
+        JOIN users u ON t.user_id = u.id
+        JOIN games g ON t.game_id = g.id
+        ORDER BY t.transaction_date DESC
+    `)
+	if err != nil {
+		// ถ้าไม่มีตาราง transactions ให้ใช้ user_transactions แทน
+		rows, err = db.Query(`
+            SELECT ut.id, ut.user_id, u.username, 0 as game_id, 
+                   ut.description as game_name, ut.amount, 
+                   ut.created_at as transaction_date, 
+                   'completed' as status, 
+                   ut.type as payment_method
+            FROM user_transactions ut
+            JOIN users u ON ut.user_id = u.id
+            ORDER BY ut.created_at DESC
+        `)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	defer rows.Close()
+
+	var transactions []Transaction
+	for rows.Next() {
+		var t Transaction
+		var transactionDate sql.NullString
+		err := rows.Scan(&t.ID, &t.UserID, &t.Username, &t.GameID, &t.GameName,
+			&t.Amount, &transactionDate, &t.Status, &t.PaymentMethod)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if transactionDate.Valid {
+			t.TransactionDate = transactionDate.String
+		} else {
+			t.TransactionDate = ""
+		}
+		transactions = append(transactions, t)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(transactions)
 }
