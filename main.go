@@ -357,6 +357,7 @@ func gameAdminHandler(w http.ResponseWriter, r *http.Request) {
 		imageURL = "/uploads/" + filename
 	}
 
+	// ไม่ต้องส่ง release_date, DB จะใส่ current_date ให้เอง
 	result, err := db.Exec(
 		"INSERT INTO games (name, price, category_id, image_url, description) VALUES (?, ?, ?, ?, ?)",
 		name, price, categoryID, imageURL, description,
@@ -370,6 +371,59 @@ func gameAdminHandler(w http.ResponseWriter, r *http.Request) {
 		"id":      id,
 		"message": "Game created successfully",
 	})
+}
+
+// ================== Admin Game By ID ==================
+func gameAdminByIDHandler(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	if claims.Role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	idStr := strings.Trim(r.URL.Path[len("/game/admin/"):], "/") // trim slash
+
+	switch r.Method {
+	case http.MethodPut:
+		// ปรับ: ไม่อัพเดต release_date
+		var input struct {
+			Name        string  `json:"name"`
+			Price       float64 `json:"price"`
+			CategoryID  int     `json:"category_id"`
+			Description string  `json:"description"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		_, err := db.Exec(
+			"UPDATE games SET name=?, price=?, category_id=?, description=? WHERE id=?",
+			input.Name, input.Price, input.CategoryID, input.Description, idStr,
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"message": "Game updated successfully"})
+
+	case http.MethodDelete:
+		var purchaseCount int
+		db.QueryRow("SELECT COUNT(*) FROM purchased_games WHERE game_id = ?", idStr).Scan(&purchaseCount)
+		if purchaseCount > 0 {
+			http.Error(w, "Cannot delete game that has been purchased", http.StatusBadRequest)
+			return
+		}
+		_, err := db.Exec("DELETE FROM games WHERE id=?", idStr)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"message": "Game deleted successfully"})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // ================== Register & Login ==================
@@ -627,54 +681,4 @@ func adminTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 		txs = append(txs, t)
 	}
 	json.NewEncoder(w).Encode(txs)
-}
-
-// ================== Admin Game By ID ==================
-func gameAdminByIDHandler(w http.ResponseWriter, r *http.Request) {
-	claims := getClaims(r) // ใช้ JWT claims
-	if claims.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	idStr := strings.Trim(r.URL.Path[len("/game/admin/"):], "/") // trim slash
-
-	switch r.Method {
-	case http.MethodPut:
-		var input struct {
-			Name        string  `json:"name"`
-			Price       float64 `json:"price"`
-			CategoryID  int     `json:"category_id"`
-			Description string  `json:"description"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		_, err := db.Exec("UPDATE games SET name=?, price=?, category_id=?, description=? WHERE id=?",
-			input.Name, input.Price, input.CategoryID, input.Description, idStr)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"message": "Game updated successfully"})
-
-	case http.MethodDelete:
-		var purchaseCount int
-		db.QueryRow("SELECT COUNT(*) FROM purchased_games WHERE game_id = ?", idStr).Scan(&purchaseCount)
-		if purchaseCount > 0 {
-			http.Error(w, "Cannot delete game that has been purchased", http.StatusBadRequest)
-			return
-		}
-		_, err := db.Exec("DELETE FROM games WHERE id=?", idStr)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]string{"message": "Game deleted successfully"})
-
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
 }
