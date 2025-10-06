@@ -149,8 +149,8 @@ func main() {
 
 	// ✅ Routes (เพิ่ม authMiddleware ให้ game routes)
 	http.HandleFunc("/", corsMiddleware(rootHandler))
-	http.HandleFunc("/game", corsMiddleware(authMiddleware(gameHandler)))      // ← เพิ่ม authMiddleware
-	http.HandleFunc("/game/", corsMiddleware(authMiddleware(gameByIDHandler))) // ← เพิ่ม authMiddleware
+	http.HandleFunc("/game", corsMiddleware(authMiddleware(gameHandler))) // ← เพิ่ม authMiddleware
+	http.HandleFunc("/game/", corsMiddleware(gameByIDHandler))
 
 	http.HandleFunc("/register", corsMiddleware(registerHandler))
 	http.HandleFunc("/login", corsMiddleware(loginHandler))
