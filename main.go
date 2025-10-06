@@ -175,8 +175,8 @@ func main() {
 	http.HandleFunc("/admin/transactions", corsMiddleware(authMiddleware(adminTransactionsHandler)))
 	http.HandleFunc("/game/admin", corsMiddleware(authMiddleware(gameAdminHandler)))
 	http.HandleFunc("/game/admin/", corsMiddleware(authMiddleware(gameAdminByIDHandler)))
-
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
+	http.HandleFunc("/me/update-with-avatar", corsMiddleware(authMiddleware(updateProfileHandler)))
 
 	ip := getLocalIP()
 	fmt.Println("🚀 Server started at http://" + ip + ":8080")
@@ -686,4 +686,47 @@ func adminTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 		txs = append(txs, t)
 	}
 	json.NewEncoder(w).Encode(txs)
+}
+
+func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
+	claims := getClaims(r)
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	username := r.FormValue("username")
+	email := r.FormValue("email")
+	password := r.FormValue("password")
+
+	// อัปเดต avatar ถ้ามี
+	file, header, err := r.FormFile("avatar")
+	avatarURL := ""
+	if err == nil {
+		defer file.Close()
+		ext := filepath.Ext(header.Filename)
+		filename := fmt.Sprintf("user_%d%s", claims.UserID, ext)
+		out, _ := os.Create(filepath.Join("uploads", filename))
+		defer out.Close()
+		io.Copy(out, file)
+		avatarURL = "/uploads/" + filename
+	}
+
+	// อัปเดตใน DB
+	if avatarURL != "" && password != "" {
+		hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		db.Exec("UPDATE users SET username=?, email=?, avatar_url=?, password_hash=? WHERE id=?",
+			username, email, avatarURL, string(hashed), claims.UserID)
+	} else if avatarURL != "" {
+		db.Exec("UPDATE users SET username=?, email=?, avatar_url=? WHERE id=?",
+			username, email, avatarURL, claims.UserID)
+	} else if password != "" {
+		hashed, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		db.Exec("UPDATE users SET username=?, email=?, password_hash=? WHERE id=?",
+			username, email, string(hashed), claims.UserID)
+	} else {
+		db.Exec("UPDATE users SET username=?, email=? WHERE id=?", username, email, claims.UserID)
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"message": "Profile updated successfully"})
 }
