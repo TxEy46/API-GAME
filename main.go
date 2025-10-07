@@ -85,11 +85,20 @@ func main() {
 	http.HandleFunc("/game/admin/", corsMiddleware(authMiddleware(adminGameHandler)))
 
 	// Serve uploads folder
-	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
+	// Serve uploads folder with no-cache headers
+	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ป้องกัน cache
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		w.Header().Set("Surrogate-Control", "no-store")
+
+		http.FileServer(http.Dir("uploads")).ServeHTTP(w, r)
+	})))
 
 	ip := getLocalIP()
 	fmt.Println("🚀 Server started at http://" + ip + ":8080")
-	log.Fatal(http.ListenAndServe("0.0.0.0:8081", nil))
+	log.Fatal(http.ListenAndServe("0.0.0.0:8080", nil))
 }
 
 // ================== Helpers ==================
