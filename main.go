@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"go-api-game/handlers"
 	"log"
-	"net"
 	"net/http"
 	"os"
 
@@ -66,6 +65,7 @@ func main() {
 	http.Handle("/checkout", handlers.AuthMiddleware(http.HandlerFunc(handlers.CheckoutHandler)))
 	http.Handle("/purchases", handlers.AuthMiddleware(http.HandlerFunc(handlers.PurchaseHistoryHandler)))
 	http.Handle("/profile/update", handlers.AuthMiddleware(http.HandlerFunc(handlers.UpdateProfileHandler)))
+	http.Handle("/discounts/apply", handlers.AuthMiddleware(http.HandlerFunc(handlers.ApplyDiscountHandler)))
 
 	// --------------------------
 	// Admin Routes (Protected + Admin only)
@@ -109,9 +109,10 @@ func main() {
 	// --------------------------
 	// Start Server
 	// --------------------------
-	ip := getLocalIP()
-	fmt.Printf("🌐 Local IP Address: %s\n", ip)
+	ip := "192.168.56.1" // ใช้ IP แบบ fix
+	fmt.Printf("🌐 Server IP: %s\n", ip)
 	fmt.Printf("🚀 Server started at http://%s:8080\n", ip)
+	fmt.Printf("🚀 Also available at http://localhost:8080\n")
 	fmt.Println("✅ CORS enabled for: http://localhost:4200, http://localhost:3000")
 	fmt.Println("📚 Available endpoints:")
 	fmt.Println("   PUBLIC:")
@@ -142,21 +143,4 @@ func main() {
 
 	// ใช้ handler ที่มี CORS
 	log.Fatal(http.ListenAndServe(":8080", handler))
-}
-
-// getLocalIP returns local IP address
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "unknown"
-	}
-
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			if ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
-			}
-		}
-	}
-	return "127.0.0.1"
 }

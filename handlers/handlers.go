@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,8 @@ func RootHandler(w http.ResponseWriter, r *http.Request) {
 
 // RegisterHandler handles user registration
 func RegisterHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Printf("🔍 Register Handler - Method: %s, Content-Type: %s\n", r.Method, r.Header.Get("Content-Type"))
+
 	if r.Method != "POST" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -44,9 +47,92 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
+	var avatarURL string
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
+	contentType := r.Header.Get("Content-Type")
+
+	if strings.Contains(contentType, "multipart/form-data") {
+		// Handle multipart form (มีไฟล์ avatar)
+		fmt.Printf("📝 Processing as multipart/form-data\n")
+
+		err := r.ParseMultipartForm(10 << 20) // 10 MB limit
+		if err != nil {
+			utils.JSONError(w, "Error parsing form data", http.StatusBadRequest)
+			return
+		}
+
+		// Get form values
+		req.Username = r.FormValue("username")
+		req.Email = r.FormValue("email")
+		req.Password = r.FormValue("password")
+
+		// Handle avatar file upload
+		file, header, err := r.FormFile("avatar")
+		if err == nil {
+			defer file.Close()
+
+			// ✅ ลบการตรวจสอบประเภทไฟล์ออก - อนุญาตทุกไฟล์
+			// ไม่มีการตรวจสอบนามสกุลไฟล์อีกต่อไป
+
+			// Create unique filename
+			ext := strings.ToLower(filepath.Ext(header.Filename))
+			if ext == "" {
+				// ถ้าไฟล์ไม่มีนามสกุล ให้ใช้ .dat เป็น default
+				ext = ".dat"
+			}
+			filename := fmt.Sprintf("avatar_%d%s", time.Now().UnixNano(), ext)
+			filePath := filepath.Join("uploads", filename)
+
+			// Save file
+			dst, err := os.Create(filePath)
+			if err != nil {
+				utils.JSONError(w, "Error saving avatar", http.StatusInternalServerError)
+				return
+			}
+			defer dst.Close()
+
+			if _, err := io.Copy(dst, file); err != nil {
+				utils.JSONError(w, "Error copying avatar", http.StatusInternalServerError)
+				return
+			}
+
+			avatarURL = "/uploads/" + filename
+			fmt.Printf("✅ Avatar uploaded: %s\n", avatarURL)
+		} else {
+			// ไม่มีไฟล์ avatar ส่งมา → ใช้ default avatar
+			avatarURL = "/uploads/default-avatar.png"
+			fmt.Printf("📝 No avatar uploaded, using default: %s\n", avatarURL)
+		}
+
+		fmt.Printf("🔍 Form data - Username: %s, Email: %s, Password: %s, Avatar: %s\n",
+			req.Username, req.Email, "***", avatarURL)
+
+	} else if strings.Contains(contentType, "application/json") {
+		// Handle JSON
+		fmt.Printf("📝 Processing as JSON\n")
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			fmt.Printf("❌ Error reading body: %v\n", err)
+			utils.JSONError(w, "Error reading request body", http.StatusBadRequest)
+			return
+		}
+
+		fmt.Printf("🔍 Raw request body: %s\n", string(body))
+		r.Body = io.NopCloser(bytes.NewBuffer(body))
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			fmt.Printf("❌ JSON decode error: %v\n", err)
+			utils.JSONError(w, "Invalid JSON format: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// สำหรับ JSON request → ใช้ default avatar
+		avatarURL = "/uploads/default-avatar.png"
+		fmt.Printf("🔍 JSON data - Username: %s, Email: %s, Password: %s, Avatar: %s\n",
+			req.Username, req.Email, "***", avatarURL)
+	} else {
+		utils.JSONError(w, "Content-Type must be application/json or multipart/form-data", http.StatusBadRequest)
 		return
 	}
 
@@ -71,10 +157,10 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	// Check if username or email already exists
 	var count int
 	err := db.QueryRow(`
-		SELECT COUNT(*) 
-		FROM users 
-		WHERE username = ? OR email = ?
-	`, req.Username, req.Email).Scan(&count)
+        SELECT COUNT(*) 
+        FROM users 
+        WHERE username = ? OR email = ?
+    `, req.Username, req.Email).Scan(&count)
 
 	if err != nil {
 		utils.JSONError(w, "Error checking user existence", http.StatusInternalServerError)
@@ -85,11 +171,11 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		// Check which field is duplicate
 		var existingUsername, existingEmail string
 		db.QueryRow(`
-			SELECT username, email 
-			FROM users 
-			WHERE username = ? OR email = ?
-			LIMIT 1
-		`, req.Username, req.Email).Scan(&existingUsername, &existingEmail)
+            SELECT username, email 
+            FROM users 
+            WHERE username = ? OR email = ?
+            LIMIT 1
+        `, req.Username, req.Email).Scan(&existingUsername, &existingEmail)
 
 		if existingUsername == req.Username {
 			utils.JSONError(w, "Username already exists", http.StatusBadRequest)
@@ -108,12 +194,17 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default role is 'user'
+	// Insert user with avatar_url (ตอนนี้จะมี avatar_url เสมอ)
 	result, err := db.Exec(`
-		INSERT INTO users (username, email, password_hash, role) 
-		VALUES (?, ?, ?, 'user')
-	`, req.Username, req.Email, string(hashedPassword))
+        INSERT INTO users (username, email, password_hash, role, avatar_url) 
+        VALUES (?, ?, ?, 'user', ?)
+    `, req.Username, req.Email, string(hashedPassword), avatarURL)
+
 	if err != nil {
+		// Delete uploaded file if database insert fails (เฉพาะไฟล์ที่อัปโหลดใหม่)
+		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
+			os.Remove(strings.TrimPrefix(avatarURL, "/"))
+		}
 		utils.JSONError(w, "Error creating user: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -123,14 +214,27 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	// Create cart for user
 	_, err = db.Exec("INSERT INTO carts (user_id) VALUES (?)", userID)
 	if err != nil {
+		// Delete uploaded file if cart creation fails (เฉพาะไฟล์ที่อัปโหลดใหม่)
+		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
+			os.Remove(strings.TrimPrefix(avatarURL, "/"))
+		}
 		utils.JSONError(w, "Error creating cart", http.StatusInternalServerError)
 		return
 	}
 
-	utils.JSONResponse(w, map[string]interface{}{
-		"message": "User registered successfully",
-		"user_id": userID,
-	}, http.StatusCreated)
+	fmt.Printf("✅ User registered successfully: ID=%d, Username=%s, Avatar: %s\n",
+		userID, req.Username, avatarURL)
+
+	// Return response with avatar_url
+	response := map[string]interface{}{
+		"message":    "User registered successfully",
+		"user_id":    userID,
+		"username":   req.Username,
+		"email":      req.Email,
+		"avatar_url": avatarURL, // ส่ง avatar_url ตลอด
+	}
+
+	utils.JSONResponse(w, response, http.StatusCreated)
 }
 
 // isValidEmail checks if email format is valid
@@ -1094,6 +1198,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		utils.JSONError(w, "Error fetching cart items", http.StatusInternalServerError)
 		return
 	}
+	defer rows.Close() // ✅ ใช้ defer เพื่อปิด rows
 
 	var cartItems []struct {
 		GameID   int
@@ -1111,7 +1216,6 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 			Quantity int
 		}
 		if err := rows.Scan(&item.GameID, &item.Name, &item.Price, &item.Quantity); err != nil {
-			rows.Close()
 			tx.Rollback()
 			utils.JSONError(w, "Error scanning cart items", http.StatusInternalServerError)
 			return
@@ -1119,7 +1223,12 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		cartItems = append(cartItems, item)
 		total += item.Price * float64(item.Quantity)
 	}
-	rows.Close()
+
+	if err := rows.Err(); err != nil {
+		tx.Rollback()
+		utils.JSONError(w, "Error reading cart items", http.StatusInternalServerError)
+		return
+	}
 
 	if len(cartItems) == 0 {
 		tx.Rollback()
@@ -1161,9 +1270,10 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 			UsageLimit       *int
 			SingleUsePerUser bool
 			Active           bool
-			StartDate        *time.Time
-			EndDate          *time.Time
 		}
+
+		// ✅ ใช้ sql.NullString สำหรับรับค่า date จาก database
+		var startDateStr, endDateStr sql.NullString
 
 		err := tx.QueryRow(`
 			SELECT id, type, value, min_total, usage_limit, single_use_per_user, 
@@ -1173,26 +1283,63 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		`, req.DiscountCode).Scan(
 			&discount.ID, &discount.Type, &discount.Value, &discount.MinTotal,
 			&discount.UsageLimit, &discount.SingleUsePerUser, &discount.Active,
-			&discount.StartDate, &discount.EndDate,
+			&startDateStr, &endDateStr, // ✅ รับเป็น string ก่อน
 		)
 
 		if err == nil {
+			// ✅ Convert string date to time.Time
+			var startDate, endDate *time.Time
+
+			if startDateStr.Valid && startDateStr.String != "" {
+				parsedStart, err := time.Parse("2006-01-02", startDateStr.String)
+				if err == nil {
+					startDate = &parsedStart
+				}
+			}
+
+			if endDateStr.Valid && endDateStr.String != "" {
+				parsedEnd, err := time.Parse("2006-01-02", endDateStr.String)
+				if err == nil {
+					endDate = &parsedEnd
+				}
+			}
+
 			// Check discount validity
 			now := time.Now()
-			if discount.StartDate != nil && now.Before(*discount.StartDate) {
-				utils.JSONError(w, "Discount code not yet valid", http.StatusBadRequest)
+			if startDate != nil && now.Before(*startDate) {
 				tx.Rollback()
+				utils.JSONError(w, "Discount code not yet valid", http.StatusBadRequest)
 				return
 			}
-			if discount.EndDate != nil && now.After(*discount.EndDate) {
-				utils.JSONError(w, "Discount code has expired", http.StatusBadRequest)
+			if endDate != nil && now.After(*endDate) {
 				tx.Rollback()
+				utils.JSONError(w, "Discount code has expired", http.StatusBadRequest)
 				return
 			}
 			if discount.MinTotal > 0 && total < discount.MinTotal {
-				utils.JSONError(w, fmt.Sprintf("Minimum purchase of $%.2f required", discount.MinTotal), http.StatusBadRequest)
 				tx.Rollback()
+				utils.JSONError(w, fmt.Sprintf("Minimum purchase of $%.2f required", discount.MinTotal), http.StatusBadRequest)
 				return
+			}
+
+			// Check usage limit
+			if discount.UsageLimit != nil {
+				var usageCount int
+				err := tx.QueryRow(`
+                SELECT COUNT(*) 
+                FROM user_discount_codes 
+                WHERE discount_code_id = ?
+            `, discount.ID).Scan(&usageCount)
+
+				if err == nil && usageCount >= *discount.UsageLimit {
+					// ❌ ตั้งค่า active = 0 เมื่อใช้ครบจำนวน
+					tx.Exec("UPDATE discount_codes SET active = 0 WHERE id = ?", discount.ID)
+					fmt.Printf("🚫 Discount code deactivated: ID=%d, usage reached limit\n", discount.ID)
+
+					tx.Rollback()
+					utils.JSONError(w, "Discount code usage limit reached", http.StatusBadRequest)
+					return
+				}
 			}
 
 			// Check if user already used this code
@@ -1204,9 +1351,14 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 						WHERE user_id = ? AND discount_code_id = ?
 					)
 				`, userID, discount.ID).Scan(&used)
-				if err == nil && used {
-					utils.JSONError(w, "Discount code already used", http.StatusBadRequest)
+				if err != nil {
 					tx.Rollback()
+					utils.JSONError(w, "Error checking discount usage", http.StatusInternalServerError)
+					return
+				}
+				if used {
+					tx.Rollback()
+					utils.JSONError(w, "Discount code already used", http.StatusBadRequest)
 					return
 				}
 			}
@@ -1224,7 +1376,16 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			discountCodeID = &discount.ID
+
+			fmt.Printf("✅ Discount applied in checkout: Code=%s, Discount=%.2f, Final=%.2f\n",
+				req.DiscountCode, discountValue, finalAmount)
+		} else if err != sql.ErrNoRows {
+			// ❌ Database error (ไม่ใช่แค่หาไม่เจอ)
+			tx.Rollback()
+			utils.JSONError(w, "Error checking discount code", http.StatusInternalServerError)
+			return
 		}
+		// ถ้า err == sql.ErrNoRows ก็แค่ไม่ใช้ส่วนลด (ไม่ต้องทำอะไร)
 	}
 
 	// Check wallet balance
@@ -1311,13 +1472,35 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	// Record discount usage
 	if discountCodeID != nil {
 		_, err = tx.Exec(`
-			INSERT INTO user_discount_codes (user_id, discount_code_id)
-			VALUES (?, ?)
-		`, userID, *discountCodeID)
+            INSERT INTO user_discount_codes (user_id, discount_code_id)
+            VALUES (?, ?)
+        `, userID, *discountCodeID)
 		if err != nil {
 			tx.Rollback()
 			utils.JSONError(w, "Error recording discount usage", http.StatusInternalServerError)
 			return
+		}
+
+		// ✅ ตรวจสอบว่าถึงขีดจำกัดการใช้งานแล้วหรือไม่
+		var usageCount int
+		var usageLimit *int
+		err = tx.QueryRow(`
+            SELECT usage_limit FROM discount_codes WHERE id = ?
+        `, *discountCodeID).Scan(&usageLimit)
+
+		if err == nil && usageLimit != nil {
+			err = tx.QueryRow(`
+                SELECT COUNT(*) FROM user_discount_codes WHERE discount_code_id = ?
+            `, *discountCodeID).Scan(&usageCount)
+
+			if err == nil && usageCount >= *usageLimit {
+				// 🚫 ตั้งค่า active = 0 เมื่อใช้ครบจำนวน
+				_, err = tx.Exec("UPDATE discount_codes SET active = 0 WHERE id = ?", *discountCodeID)
+				if err == nil {
+					fmt.Printf("🚫 Discount code auto-deactivated: ID=%d, usage reached limit (%d/%d)\n",
+						*discountCodeID, usageCount, *usageLimit)
+				}
+			}
 		}
 	}
 
@@ -1353,6 +1536,9 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		utils.JSONError(w, "Error completing purchase", http.StatusInternalServerError)
 		return
 	}
+
+	fmt.Printf("✅ Checkout completed: user_id=%d, purchase_id=%d, total=%.2f, final=%.2f\n",
+		userID, purchaseID, total, finalAmount)
 
 	utils.JSONResponse(w, map[string]interface{}{
 		"message":      "Purchase completed successfully",
@@ -1650,13 +1836,13 @@ func AdminDiscountHandler(w http.ResponseWriter, r *http.Request) {
 		createDiscount(w, r)
 	case "PUT":
 		if id > 0 {
-			updateDiscount(w, r, id)
+			updateDiscountWithReset(w, r, id) // เปลี่ยนเป็นฟังก์ชันใหม่
 		} else {
 			utils.JSONError(w, "Discount ID required", http.StatusBadRequest)
 		}
 	case "DELETE":
 		if id > 0 {
-			deleteDiscount(w, r, id)
+			deleteDiscountWithCleanup(w, r, id) // เปลี่ยนเป็นฟังก์ชันใหม่
 		} else {
 			utils.JSONError(w, "Discount ID required", http.StatusBadRequest)
 		}
@@ -1665,20 +1851,215 @@ func AdminDiscountHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// PUT /admin/discounts/{id} - อัพเดต + รีเซ็ตการใช้งานเมื่อเปิดใช้งานใหม่
+func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
+	fmt.Printf("✏️ Updating discount code with reset: ID=%d\n", id)
+
+	var req struct {
+		Code             string  `json:"code"`
+		Type             string  `json:"type"`
+		Value            float64 `json:"value"`
+		MinTotal         float64 `json:"min_total"`
+		StartDate        *string `json:"start_date"`
+		EndDate          *string `json:"end_date"`
+		UsageLimit       *int    `json:"usage_limit"`
+		SingleUsePerUser bool    `json:"single_use_per_user"`
+		Active           bool    `json:"active"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validation
+	if req.Code == "" {
+		utils.JSONError(w, "Discount code is required", http.StatusBadRequest)
+		return
+	}
+	if req.Value <= 0 {
+		utils.JSONError(w, "Discount value must be greater than 0", http.StatusBadRequest)
+		return
+	}
+	if req.Type != "percent" && req.Type != "fixed" {
+		utils.JSONError(w, "Discount type must be 'percent' or 'fixed'", http.StatusBadRequest)
+		return
+	}
+
+	// เริ่ม transaction
+	tx, err := db.Begin()
+	if err != nil {
+		utils.JSONError(w, "Error starting transaction", http.StatusInternalServerError)
+		return
+	}
+
+	// ตรวจสอบสถานะ active ก่อนหน้า
+	var currentActive bool
+	err = tx.QueryRow("SELECT active FROM discount_codes WHERE id = ?", id).Scan(&currentActive)
+	if err != nil {
+		tx.Rollback()
+		if err == sql.ErrNoRows {
+			utils.JSONError(w, "Discount code not found", http.StatusNotFound)
+		} else {
+			utils.JSONError(w, "Error checking current discount status", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// ถ้ากำลังเปลี่ยนจาก inactive (false) เป็น active (true) -> ลบประวัติการใช้งาน
+	resetUsage := false
+	if !currentActive && req.Active {
+		_, err = tx.Exec("DELETE FROM user_discount_codes WHERE discount_code_id = ?", id)
+		if err != nil {
+			tx.Rollback()
+			utils.JSONError(w, "Error resetting discount usage history", http.StatusInternalServerError)
+			return
+		}
+		resetUsage = true
+		fmt.Printf("✅ Reset usage history for discount ID: %d (reactivated)\n", id)
+	}
+
+	// Parse dates
+	var startDate, endDate interface{}
+	if req.StartDate != nil && *req.StartDate != "" {
+		if date, err := time.Parse("2006-01-02", *req.StartDate); err == nil {
+			startDate = date
+		} else {
+			tx.Rollback()
+			utils.JSONError(w, "Invalid start date format. Use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	}
+	if req.EndDate != nil && *req.EndDate != "" {
+		if date, err := time.Parse("2006-01-02", *req.EndDate); err == nil {
+			endDate = date
+		} else {
+			tx.Rollback()
+			utils.JSONError(w, "Invalid end date format. Use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// ตรวจสอบว่า code ซ้ำหรือไม่ (ไม่รวมตัวเอง)
+	var existingCode string
+	var existingID int
+	err = tx.QueryRow("SELECT id, code FROM discount_codes WHERE code = ? AND id != ?", req.Code, id).Scan(&existingID, &existingCode)
+	if err == nil {
+		tx.Rollback()
+		utils.JSONError(w, "Discount code already exists", http.StatusConflict)
+		return
+	} else if err != sql.ErrNoRows {
+		tx.Rollback()
+		utils.JSONError(w, "Error checking discount code", http.StatusInternalServerError)
+		return
+	}
+
+	// อัพเดต discount code
+	result, err := tx.Exec(`
+		UPDATE discount_codes 
+		SET code = ?, type = ?, value = ?, min_total = ?, start_date = ?, end_date = ?, 
+		    usage_limit = ?, single_use_per_user = ?, active = ?
+		WHERE id = ?
+	`, req.Code, req.Type, req.Value, req.MinTotal, startDate, endDate, req.UsageLimit, req.SingleUsePerUser, req.Active, id)
+
+	if err != nil {
+		tx.Rollback()
+		fmt.Printf("❌ Error updating discount code: %v\n", err)
+		utils.JSONError(w, "Error updating discount code", http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		tx.Rollback()
+		utils.JSONError(w, "Discount code not found", http.StatusNotFound)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		utils.JSONError(w, "Error completing update", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("✅ Discount code updated: ID=%d, Code=%s, Active=%t\n", id, req.Code, req.Active)
+
+	utils.JSONResponse(w, map[string]interface{}{
+		"message":     "Discount code updated successfully",
+		"id":          id,
+		"active":      req.Active,
+		"reset_usage": resetUsage, // บอกว่าทำการรีเซ็ตการใช้งานหรือไม่
+	}, http.StatusOK)
+}
+
+// DELETE /admin/discounts/{id} - ลบ + ลบประวัติการใช้งาน
+func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
+	fmt.Printf("🗑️ Deleting discount code with cleanup: ID=%d\n", id)
+
+	// เริ่ม transaction
+	tx, err := db.Begin()
+	if err != nil {
+		utils.JSONError(w, "Error starting transaction", http.StatusInternalServerError)
+		return
+	}
+
+	// 1. ลบประวัติการใช้งานใน user_discount_codes ก่อน
+	_, err = tx.Exec("DELETE FROM user_discount_codes WHERE discount_code_id = ?", id)
+	if err != nil {
+		tx.Rollback()
+		fmt.Printf("❌ Error deleting discount usage history: %v\n", err)
+		utils.JSONError(w, "Error deleting discount usage history", http.StatusInternalServerError)
+		return
+	}
+	fmt.Printf("✅ Deleted usage history for discount ID: %d\n", id)
+
+	// 2. ลบ discount code
+	result, err := tx.Exec("DELETE FROM discount_codes WHERE id = ?", id)
+	if err != nil {
+		tx.Rollback()
+		fmt.Printf("❌ Error deleting discount code: %v\n", err)
+		utils.JSONError(w, "Error deleting discount code", http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		tx.Rollback()
+		utils.JSONError(w, "Discount code not found", http.StatusNotFound)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		utils.JSONError(w, "Error completing deletion", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("✅ Discount code deleted: ID=%d\n", id)
+
+	utils.JSONResponse(w, map[string]interface{}{
+		"message":      "Discount code deleted successfully",
+		"id":           id,
+		"cleanup_done": true, // บอกว่าทำการลบประวัติการใช้งานแล้ว
+	}, http.StatusOK)
+}
+
 // GET /admin/discounts - ดึงทั้งหมด
-// GET /admin/discounts/{id} - ดึงโดย ID
 func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
+	// เรียกตรวจสอบอัตโนมัติก่อนดึงข้อมูล
+	go autoDeactivateDiscounts()
 	fmt.Println("🔍 Fetching all discount codes")
 
 	rows, err := db.Query(`
 		SELECT 
-			id, code, type, value, min_total, 
-			DATE_FORMAT(start_date, '%Y-%m-%d') as start_date,
-			DATE_FORMAT(end_date, '%Y-%m-%d') as end_date,
-			usage_limit, single_use_per_user, active,
-			created_at
-		FROM discount_codes 
-		ORDER BY created_at DESC
+			dc.id, dc.code, dc.type, dc.value, dc.min_total, 
+			DATE_FORMAT(dc.start_date, '%Y-%m-%d') as start_date,
+			DATE_FORMAT(dc.end_date, '%Y-%m-%d') as end_date,
+			dc.usage_limit, dc.single_use_per_user, dc.active,
+			dc.created_at,
+			COUNT(udc.id) as usage_count
+		FROM discount_codes dc
+		LEFT JOIN user_discount_codes udc ON dc.id = udc.discount_code_id
+		GROUP BY dc.id
+		ORDER BY dc.created_at DESC
 	`)
 	if err != nil {
 		fmt.Printf("❌ Error fetching discount codes: %v\n", err)
@@ -1697,8 +2078,9 @@ func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 		var startDate, endDate, createdAt sql.NullString
 		var usageLimit sql.NullInt64
 		var singleUsePerUser, active bool
+		var usageCount int
 
-		err := rows.Scan(&id, &code, &discountType, &value, &minTotal, &startDate, &endDate, &usageLimit, &singleUsePerUser, &active, &createdAt)
+		err := rows.Scan(&id, &code, &discountType, &value, &minTotal, &startDate, &endDate, &usageLimit, &singleUsePerUser, &active, &createdAt, &usageCount)
 		if err != nil {
 			fmt.Printf("❌ Error scanning discount row: %v\n", err)
 			continue
@@ -1714,6 +2096,7 @@ func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 			"single_use_per_user": singleUsePerUser,
 			"active":              active,
 			"created_at":          createdAt.String,
+			"usage_count":         usageCount, // เพิ่มจำนวนการใช้งาน
 		}
 
 		if startDate.Valid {
@@ -1741,6 +2124,7 @@ func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 	}, http.StatusOK)
 }
 
+// GET /admin/discounts/{id} - ดึงโดย ID
 func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 	fmt.Printf("🔍 Fetching discount code: ID=%d\n", id)
 
@@ -1749,15 +2133,20 @@ func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 	var startDate, endDate, createdAt sql.NullString
 	var usageLimit sql.NullInt64
 	var singleUsePerUser, active bool
+	var usageCount int
 
 	err := db.QueryRow(`
 		SELECT 
-			code, type, value, min_total, 
-			DATE_FORMAT(start_date, '%Y-%m-%d') as start_date,
-			DATE_FORMAT(end_date, '%Y-%m-%d') as end_date,
-			usage_limit, single_use_per_user, active, created_at
-		FROM discount_codes WHERE id = ?
-	`, id).Scan(&code, &discountType, &value, &minTotal, &startDate, &endDate, &usageLimit, &singleUsePerUser, &active, &createdAt)
+			dc.code, dc.type, dc.value, dc.min_total, 
+			DATE_FORMAT(dc.start_date, '%Y-%m-%d') as start_date,
+			DATE_FORMAT(dc.end_date, '%Y-%m-%d') as end_date,
+			dc.usage_limit, dc.single_use_per_user, dc.active, dc.created_at,
+			COUNT(udc.id) as usage_count
+		FROM discount_codes dc
+		LEFT JOIN user_discount_codes udc ON dc.id = udc.discount_code_id
+		WHERE dc.id = ?
+		GROUP BY dc.id
+	`, id).Scan(&code, &discountType, &value, &minTotal, &startDate, &endDate, &usageLimit, &singleUsePerUser, &active, &createdAt, &usageCount)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -1778,6 +2167,7 @@ func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 		"single_use_per_user": singleUsePerUser,
 		"active":              active,
 		"created_at":          createdAt.String,
+		"usage_count":         usageCount, // เพิ่มจำนวนการใช้งาน
 	}
 
 	if startDate.Valid {
@@ -1787,11 +2177,11 @@ func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 		discount["end_date"] = endDate.String
 	}
 
-	fmt.Printf("✅ Discount code found: ID=%d, Code=%s\n", id, code)
+	fmt.Printf("✅ Discount code found: ID=%d, Code=%s, Usage Count=%d\n", id, code, usageCount)
 	utils.JSONResponse(w, discount, http.StatusOK)
 }
 
-// POST /admin/discounts - สร้างใหม่
+// POST /admin/discounts - สร้างใหม่ (คงเดิม)
 func createDiscount(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("➕ Creating new discount code")
 
@@ -1876,125 +2266,6 @@ func createDiscount(w http.ResponseWriter, r *http.Request) {
 		"message": "Discount code created successfully",
 		"id":      id,
 	}, http.StatusCreated)
-}
-
-// PUT /admin/discounts/{id} - อัพเดต
-func updateDiscount(w http.ResponseWriter, r *http.Request, id int) {
-	fmt.Printf("✏️ Updating discount code: ID=%d\n", id)
-
-	var req struct {
-		Code             string  `json:"code"`
-		Type             string  `json:"type"`
-		Value            float64 `json:"value"`
-		MinTotal         float64 `json:"min_total"`
-		StartDate        *string `json:"start_date"`
-		EndDate          *string `json:"end_date"`
-		UsageLimit       *int    `json:"usage_limit"`
-		SingleUsePerUser bool    `json:"single_use_per_user"`
-		Active           bool    `json:"active"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	// Validation
-	if req.Code == "" {
-		utils.JSONError(w, "Discount code is required", http.StatusBadRequest)
-		return
-	}
-	if req.Value <= 0 {
-		utils.JSONError(w, "Discount value must be greater than 0", http.StatusBadRequest)
-		return
-	}
-	if req.Type != "percent" && req.Type != "fixed" {
-		utils.JSONError(w, "Discount type must be 'percent' or 'fixed'", http.StatusBadRequest)
-		return
-	}
-
-	// Parse dates
-	var startDate, endDate interface{}
-	if req.StartDate != nil && *req.StartDate != "" {
-		if date, err := time.Parse("2006-01-02", *req.StartDate); err == nil {
-			startDate = date
-		} else {
-			utils.JSONError(w, "Invalid start date format. Use YYYY-MM-DD", http.StatusBadRequest)
-			return
-		}
-	}
-	if req.EndDate != nil && *req.EndDate != "" {
-		if date, err := time.Parse("2006-01-02", *req.EndDate); err == nil {
-			endDate = date
-		} else {
-			utils.JSONError(w, "Invalid end date format. Use YYYY-MM-DD", http.StatusBadRequest)
-			return
-		}
-	}
-
-	// ตรวจสอบว่า code ซ้ำหรือไม่ (ไม่รวมตัวเอง)
-	var existingCode string
-	var existingID int
-	err := db.QueryRow("SELECT id, code FROM discount_codes WHERE code = ? AND id != ?", req.Code, id).Scan(&existingID, &existingCode)
-	if err == nil {
-		utils.JSONError(w, "Discount code already exists", http.StatusConflict)
-		return
-	} else if err != sql.ErrNoRows {
-		utils.JSONError(w, "Error checking discount code", http.StatusInternalServerError)
-		return
-	}
-
-	// อัพเดต discount code
-	result, err := db.Exec(`
-		UPDATE discount_codes 
-		SET code = ?, type = ?, value = ?, min_total = ?, start_date = ?, end_date = ?, 
-		    usage_limit = ?, single_use_per_user = ?, active = ?
-		WHERE id = ?
-	`, req.Code, req.Type, req.Value, req.MinTotal, startDate, endDate, req.UsageLimit, req.SingleUsePerUser, req.Active, id)
-
-	if err != nil {
-		fmt.Printf("❌ Error updating discount code: %v\n", err)
-		utils.JSONError(w, "Error updating discount code", http.StatusInternalServerError)
-		return
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		utils.JSONError(w, "Discount code not found", http.StatusNotFound)
-		return
-	}
-
-	fmt.Printf("✅ Discount code updated: ID=%d, Code=%s\n", id, req.Code)
-
-	utils.JSONResponse(w, map[string]interface{}{
-		"message": "Discount code updated successfully",
-		"id":      id,
-	}, http.StatusOK)
-}
-
-// DELETE /admin/discounts/{id} - ลบ
-func deleteDiscount(w http.ResponseWriter, r *http.Request, id int) {
-	fmt.Printf("🗑️ Deleting discount code: ID=%d\n", id)
-
-	result, err := db.Exec("DELETE FROM discount_codes WHERE id = ?", id)
-	if err != nil {
-		fmt.Printf("❌ Error deleting discount code: %v\n", err)
-		utils.JSONError(w, "Error deleting discount code", http.StatusInternalServerError)
-		return
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		utils.JSONError(w, "Discount code not found", http.StatusNotFound)
-		return
-	}
-
-	fmt.Printf("✅ Discount code deleted: ID=%d\n", id)
-
-	utils.JSONResponse(w, map[string]interface{}{
-		"message": "Discount code deleted successfully",
-		"id":      id,
-	}, http.StatusOK)
 }
 
 func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
@@ -3057,4 +3328,213 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.JSONResponse(w, response, http.StatusOK)
+}
+
+// ApplyDiscountHandler handles discount code validation and application
+func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Code        string  `json:"code"`
+		TotalAmount float64 `json:"total_amount"`
+		UserID      int     `json:"user_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	fmt.Printf("🔍 Applying discount code: %s for user %d, total: %.2f\n", req.Code, req.UserID, req.TotalAmount)
+
+	// Check if discount code exists and is valid
+	var discount struct {
+		ID               int
+		Type             string
+		Value            float64
+		MinTotal         float64
+		UsageLimit       *int
+		SingleUsePerUser bool
+		Active           bool
+		StartDate        *time.Time
+		EndDate          *time.Time
+	}
+
+	// ใช้ sql.NullString เพื่อรับค่า date จาก database
+	var startDateStr, endDateStr sql.NullString
+
+	err := db.QueryRow(`
+        SELECT id, type, value, min_total, usage_limit, single_use_per_user, 
+               active, start_date, end_date
+        FROM discount_codes 
+        WHERE code = ? AND active = 1
+    `, req.Code).Scan(
+		&discount.ID, &discount.Type, &discount.Value, &discount.MinTotal,
+		&discount.UsageLimit, &discount.SingleUsePerUser, &discount.Active,
+		&startDateStr, &endDateStr, // รับเป็น string ก่อน
+	)
+
+	if err != nil {
+		fmt.Printf("❌ Database error: %v\n", err)
+		if err == sql.ErrNoRows {
+			utils.JSONError(w, "Discount code not found or inactive", http.StatusBadRequest)
+		} else {
+			utils.JSONError(w, "Error checking discount code", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Convert string date to time.Time
+	if startDateStr.Valid && startDateStr.String != "" {
+		startDate, err := time.Parse("2006-01-02", startDateStr.String)
+		if err != nil {
+			fmt.Printf("❌ Error parsing start date: %v\n", err)
+		} else {
+			discount.StartDate = &startDate
+		}
+	}
+
+	if endDateStr.Valid && endDateStr.String != "" {
+		endDate, err := time.Parse("2006-01-02", endDateStr.String)
+		if err != nil {
+			fmt.Printf("❌ Error parsing end date: %v\n", err)
+		} else {
+			discount.EndDate = &endDate
+		}
+	}
+
+	fmt.Printf("✅ Discount found: ID=%d, StartDate=%v, EndDate=%v\n",
+		discount.ID, discount.StartDate, discount.EndDate)
+
+	// Validate discount code
+	now := time.Now()
+
+	// Check date validity
+	if discount.StartDate != nil && now.Before(*discount.StartDate) {
+		utils.JSONError(w, "Discount code not yet valid", http.StatusBadRequest)
+		return
+	}
+	if discount.EndDate != nil && now.After(*discount.EndDate) {
+		utils.JSONError(w, "Discount code has expired", http.StatusBadRequest)
+		return
+	}
+
+	// Check minimum total
+	if discount.MinTotal > 0 && req.TotalAmount < discount.MinTotal {
+		utils.JSONError(w, fmt.Sprintf("Minimum purchase of $%.2f required", discount.MinTotal), http.StatusBadRequest)
+		return
+	}
+
+	// Check usage limit
+	if discount.UsageLimit != nil {
+		var usageCount int
+		err := db.QueryRow(`
+            SELECT COUNT(*) 
+            FROM user_discount_codes 
+            WHERE discount_code_id = ?
+        `, discount.ID).Scan(&usageCount)
+
+		if err == nil && usageCount >= *discount.UsageLimit {
+			// ❌ ตั้งค่า active = 0 เมื่อใช้ครบจำนวน
+			db.Exec("UPDATE discount_codes SET active = 0 WHERE id = ?", discount.ID)
+			fmt.Printf("🚫 Discount code deactivated: ID=%d, usage reached limit\n", discount.ID)
+
+			utils.JSONError(w, "Discount code usage limit reached", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Check if user already used this code (for single-use codes)
+	if discount.SingleUsePerUser {
+		var used bool
+		err := db.QueryRow(`
+            SELECT EXISTS(
+                SELECT 1 FROM user_discount_codes 
+                WHERE user_id = ? AND discount_code_id = ?
+            )
+        `, req.UserID, discount.ID).Scan(&used)
+
+		if err != nil {
+			fmt.Printf("❌ Error checking single use: %v\n", err)
+		} else if used {
+			utils.JSONError(w, "Discount code already used", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Calculate discount amount
+	var discountAmount float64
+	var finalAmount float64
+
+	if discount.Type == "percent" {
+		discountAmount = req.TotalAmount * (discount.Value / 100)
+	} else {
+		discountAmount = discount.Value
+	}
+
+	finalAmount = req.TotalAmount - discountAmount
+	if finalAmount < 0 {
+		finalAmount = 0
+	}
+
+	fmt.Printf("✅ Discount applied: Code=%s, Type=%s, Value=%.2f, Discount=%.2f, Final=%.2f\n",
+		req.Code, discount.Type, discount.Value, discountAmount, finalAmount)
+
+	// Return successful response
+	utils.JSONResponse(w, map[string]interface{}{
+		"valid":           true,
+		"discount_id":     discount.ID,
+		"code":            req.Code,
+		"type":            discount.Type,
+		"value":           discount.Value,
+		"min_total":       discount.MinTotal,
+		"discount_amount": discountAmount,
+		"final_amount":    finalAmount,
+		"original_amount": req.TotalAmount,
+		"message":         "Discount applied successfully",
+	}, http.StatusOK)
+}
+
+// ฟังก์ชันสำหรับตรวจสอบและปิดใช้งานส่วนลดที่ครบจำนวน
+func autoDeactivateDiscounts() {
+	fmt.Println("🔄 Checking for discount codes to deactivate...")
+
+	rows, err := db.Query(`
+        SELECT dc.id, dc.usage_limit, COUNT(udc.id) as usage_count
+        FROM discount_codes dc
+        LEFT JOIN user_discount_codes udc ON dc.id = udc.discount_code_id
+        WHERE dc.active = 1 AND dc.usage_limit IS NOT NULL
+        GROUP BY dc.id
+        HAVING usage_count >= dc.usage_limit
+    `)
+	if err != nil {
+		fmt.Printf("❌ Error checking discount deactivation: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	var deactivatedCount int
+	for rows.Next() {
+		var discountID int
+		var usageLimit, usageCount int
+		err := rows.Scan(&discountID, &usageLimit, &usageCount)
+		if err != nil {
+			continue
+		}
+
+		// ปิดใช้งานส่วนลด
+		_, err = db.Exec("UPDATE discount_codes SET active = 0 WHERE id = ?", discountID)
+		if err == nil {
+			fmt.Printf("🚫 Auto-deactivated discount: ID=%d, usage %d/%d\n",
+				discountID, usageCount, usageLimit)
+			deactivatedCount++
+		}
+	}
+
+	if deactivatedCount > 0 {
+		fmt.Printf("✅ Auto-deactivated %d discount codes\n", deactivatedCount)
+	}
 }
