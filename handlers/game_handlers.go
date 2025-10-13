@@ -223,7 +223,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ดึง query parameters
 	query := r.URL.Query().Get("q")           // คำค้นหา
-	category := r.URL.Query().Get("category") // หมวดหมู่
+	category := r.URL.Query().Get("category") // หมวดหมู่ (รับเป็น ID หรือชื่อ)
 
 	fmt.Printf("🔍 Search request - Query: '%s', Category: '%s'\n", query, category)
 
@@ -247,13 +247,21 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 		args = append(args, searchTerm, searchTerm)
 	}
 
-	// เพิ่มเงื่อนไขการค้นหาตามหมวดหมู่
+	// เพิ่มเงื่อนไขการค้นหาตามหมวดหมู่ (รองรับทั้ง ID และชื่อ)
 	if category != "" {
-		sqlQuery += " AND c.name = ?"
-		args = append(args, category)
+		// ตรวจสอบว่า category เป็นตัวเลข (ID) หรือข้อความ (ชื่อ)
+		if categoryID, err := strconv.Atoi(category); err == nil {
+			// ถ้าเป็นตัวเลข -> ค้นหาด้วย category_id
+			sqlQuery += " AND g.category_id = ?"
+			args = append(args, categoryID)
+		} else {
+			// ถ้าเป็นข้อความ -> ค้นหาด้วย category name
+			sqlQuery += " AND c.name = ?"
+			args = append(args, category)
+		}
 	}
 
-	sqlQuery += " ORDER BY g.id"
+	sqlQuery += " ORDER BY g.name"
 
 	fmt.Printf("🔍 Executing search query: %s\n", sqlQuery)
 	fmt.Printf("🔍 Query parameters: %v\n", args)
@@ -306,7 +314,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 
 		games = append(games, game)
 		count++
-		fmt.Printf("✅ Search result: ID=%d, Name=%s\n", id, name)
+		fmt.Printf("✅ Search result: ID=%d, Name=%s, Category=%s\n", id, name, category)
 	}
 
 	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
