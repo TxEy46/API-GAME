@@ -10,7 +10,9 @@ import (
 )
 
 // GamesHandler returns all games
+// ฟังก์ชันสำหรับดึงข้อมูลเกมทั้งหมด
 func GamesHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด GET หรือไม่
 	if r.Method != "GET" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -39,6 +41,7 @@ func GamesHandler(w http.ResponseWriter, r *http.Request) {
 	var games []map[string]interface{}
 	count := 0
 
+	// อ่านข้อมูลเกมทีละแถว
 	for rows.Next() {
 		var id int
 		var name string
@@ -54,6 +57,7 @@ func GamesHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// สร้าง object เกม
 		game := map[string]interface{}{
 			"id":          id,
 			"name":        name,
@@ -64,7 +68,7 @@ func GamesHandler(w http.ResponseWriter, r *http.Request) {
 			"rank":        rank.Int64,
 		}
 
-		// Handle release date
+		// จัดการวันที่วางจำหน่าย
 		if releaseDate.Valid && releaseDate.String != "" {
 			game["release_date"] = releaseDate.String
 		} else {
@@ -77,6 +81,7 @@ func GamesHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("✅ Game found: ID=%d, Name=%s, Price=%.2f\n", id, name, price)
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing games", http.StatusInternalServerError)
@@ -85,6 +90,7 @@ func GamesHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Total games found: %d\n", count)
 
+	// ตรวจสอบว่า games ไม่เป็น nil
 	if games == nil {
 		games = []map[string]interface{}{}
 	}
@@ -93,12 +99,16 @@ func GamesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // GameByIDHandler returns a specific game by ID
+// ฟังก์ชันสำหรับดึงข้อมูลเกมเฉพาะตาม ID
 func GameByIDHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด GET หรือไม่
 	if r.Method != "GET" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// ดึง game_id จาก URL path
+	// ตัวอย่าง URL: /games/123 → gameID = 123
 	pathParts := strings.Split(r.URL.Path, "/")
 	idStr := pathParts[len(pathParts)-1]
 	gameID, err := strconv.Atoi(idStr)
@@ -109,7 +119,7 @@ func GameByIDHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("🔍 Fetching game by ID: %d\n", gameID)
 
-	// ใช้ DATE_FORMAT เพื่อแปลง DATE เป็น string โดยตรง
+	// โครงสร้างสำหรับเก็บข้อมูลเกม
 	var game struct {
 		ID          int
 		Name        string
@@ -121,6 +131,7 @@ func GameByIDHandler(w http.ResponseWriter, r *http.Request) {
 		Rank        sql.NullInt64
 	}
 
+	// ใช้ DATE_FORMAT เพื่อแปลง DATE เป็น string โดยตรง
 	err = db.QueryRow(`
 		SELECT g.id, g.name, g.price, c.name as category, g.image_url, 
 		       g.description, 
@@ -145,6 +156,7 @@ func GameByIDHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Game found: ID=%d, Name=%s\n", game.ID, game.Name)
 
+	// สร้าง object เกมสำหรับ response
 	gameMap := map[string]interface{}{
 		"id":          game.ID,
 		"name":        game.Name,
@@ -155,6 +167,7 @@ func GameByIDHandler(w http.ResponseWriter, r *http.Request) {
 		"rank":        game.Rank.Int64,
 	}
 
+	// จัดการวันที่วางจำหน่าย
 	if game.ReleaseDate.Valid && game.ReleaseDate.String != "" {
 		gameMap["release_date"] = game.ReleaseDate.String
 	} else {
@@ -165,12 +178,15 @@ func GameByIDHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // CategoriesHandler returns all categories
+// ฟังก์ชันสำหรับดึงข้อมูลหมวดหมู่ทั้งหมด
 func CategoriesHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด GET หรือไม่
 	if r.Method != "GET" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// ดึงข้อมูลหมวดหมู่ทั้งหมด
 	rows, err := db.Query("SELECT id, name FROM categories")
 	if err != nil {
 		utils.JSONError(w, "Error fetching categories", http.StatusInternalServerError)
@@ -179,6 +195,8 @@ func CategoriesHandler(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	var categories []map[string]interface{}
+
+	// อ่านข้อมูลหมวดหมู่ทีละแถว
 	for rows.Next() {
 		var id int
 		var name string
@@ -195,17 +213,21 @@ func CategoriesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // SearchHandler handles game search
+// ฟังก์ชันสำหรับค้นหาเกม
 func SearchHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด GET หรือไม่
 	if r.Method != "GET" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	query := r.URL.Query().Get("q")
-	category := r.URL.Query().Get("category")
+	// ดึง query parameters
+	query := r.URL.Query().Get("q")           // คำค้นหา
+	category := r.URL.Query().Get("category") // หมวดหมู่
 
 	fmt.Printf("🔍 Search request - Query: '%s', Category: '%s'\n", query, category)
 
+	// สร้างคำสั่ง SQL พื้นฐาน
 	sqlQuery := `
 		SELECT g.id, g.name, g.price, c.name as category, g.image_url, 
 		       g.description, 
@@ -218,12 +240,14 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 	`
 	args := []interface{}{}
 
+	// เพิ่มเงื่อนไขการค้นหาตามคำค้นหา
 	if query != "" {
 		sqlQuery += " AND (g.name LIKE ? OR g.description LIKE ?)"
 		searchTerm := "%" + query + "%"
 		args = append(args, searchTerm, searchTerm)
 	}
 
+	// เพิ่มเงื่อนไขการค้นหาตามหมวดหมู่
 	if category != "" {
 		sqlQuery += " AND c.name = ?"
 		args = append(args, category)
@@ -234,6 +258,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("🔍 Executing search query: %s\n", sqlQuery)
 	fmt.Printf("🔍 Query parameters: %v\n", args)
 
+	// Execute query
 	rows, err := db.Query(sqlQuery, args...)
 	if err != nil {
 		fmt.Printf("❌ Error searching games: %v\n", err)
@@ -245,6 +270,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 	var games []map[string]interface{}
 	count := 0
 
+	// อ่านผลลัพธ์การค้นหาทีละแถว
 	for rows.Next() {
 		var id int
 		var name string
@@ -260,6 +286,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// สร้าง object เกม
 		game := map[string]interface{}{
 			"id":          id,
 			"name":        name,
@@ -270,6 +297,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 			"rank":        rank.Int64,
 		}
 
+		// จัดการวันที่วางจำหน่าย
 		if releaseDate.Valid && releaseDate.String != "" {
 			game["release_date"] = releaseDate.String
 		} else {
@@ -281,6 +309,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("✅ Search result: ID=%d, Name=%s\n", id, name)
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during search rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing search results", http.StatusInternalServerError)
@@ -289,6 +318,7 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Search completed: found %d games\n", count)
 
+	// ตรวจสอบว่า games ไม่เป็น nil
 	if games == nil {
 		games = []map[string]interface{}{}
 	}
@@ -297,7 +327,9 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // RankingHandler returns game rankings
+// ฟังก์ชันสำหรับดึงอันดับเกมตามยอดขาย
 func RankingHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด GET หรือไม่
 	if r.Method != "GET" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -326,6 +358,7 @@ func RankingHandler(w http.ResponseWriter, r *http.Request) {
 	var rankings []map[string]interface{}
 	count := 0
 
+	// อ่านข้อมูลอันดับทีละแถว
 	for rows.Next() {
 		var id int
 		var name string
@@ -342,12 +375,13 @@ func RankingHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Handle NULL rank_position
+		// จัดการ NULL rank_position
 		rankValue := 0
 		if rank.Valid {
 			rankValue = int(rank.Int64)
 		}
 
+		// สร้าง object อันดับ
 		ranking := map[string]interface{}{
 			"id":            id,
 			"name":          name,
@@ -358,6 +392,7 @@ func RankingHandler(w http.ResponseWriter, r *http.Request) {
 			"rank_position": rankValue,
 		}
 
+		// จัดการวันที่วางจำหน่าย
 		if releaseDate.Valid && releaseDate.String != "" {
 			ranking["release_date"] = releaseDate.String
 		} else {
@@ -369,6 +404,7 @@ func RankingHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("✅ Ranking: Position=%d, Game=%s, Sales=%d\n", rankValue, name, salesCount)
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during ranking rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing rankings", http.StatusInternalServerError)
@@ -377,6 +413,7 @@ func RankingHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Total rankings found: %d\n", count)
 
+	// ตรวจสอบว่า rankings ไม่เป็น nil
 	if rankings == nil {
 		rankings = []map[string]interface{}{}
 	}
@@ -385,16 +422,20 @@ func RankingHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // LibraryHandler handles user game library
+// ฟังก์ชันสำหรับดึงคลังเกมของผู้ใช้
 func LibraryHandler(w http.ResponseWriter, r *http.Request) {
+	// ดึง User-ID จาก header (ถูกตั้งค่าโดย middleware การยืนยันตัวตน)
 	userID := r.Header.Get("User-ID")
 
 	fmt.Printf("🔍 Library request for user ID: %s\n", userID)
 
+	// ตรวจสอบว่ามี User-ID หรือไม่
 	if userID == "" {
 		utils.JSONError(w, "User ID not found", http.StatusUnauthorized)
 		return
 	}
 
+	// แปลง User-ID เป็นตัวเลข
 	userIDInt, err := strconv.Atoi(userID)
 	if err != nil {
 		utils.JSONError(w, "Invalid user ID", http.StatusBadRequest)
@@ -426,6 +467,7 @@ func LibraryHandler(w http.ResponseWriter, r *http.Request) {
 	var games []map[string]interface{}
 	count := 0
 
+	// อ่านข้อมูลเกมในคลังทีละแถว
 	for rows.Next() {
 		var id int
 		var name string
@@ -441,6 +483,7 @@ func LibraryHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// สร้าง object เกมในคลัง
 		game := map[string]interface{}{
 			"id":           id,
 			"name":         name,
@@ -451,6 +494,7 @@ func LibraryHandler(w http.ResponseWriter, r *http.Request) {
 			"purchased_at": purchasedDate,
 		}
 
+		// จัดการวันที่วางจำหน่าย
 		if releaseDate.Valid && releaseDate.String != "" {
 			game["release_date"] = releaseDate.String
 		} else {
@@ -462,6 +506,7 @@ func LibraryHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("✅ Library game: ID=%d, Name=%s, Purchased=%s\n", id, name, purchasedDate)
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during library rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing library", http.StatusInternalServerError)
@@ -475,6 +520,7 @@ func LibraryHandler(w http.ResponseWriter, r *http.Request) {
 		games = []map[string]interface{}{}
 	}
 
+	// ส่ง response กลับพร้อมข้อมูลคลังเกม
 	utils.JSONResponse(w, map[string]interface{}{
 		"total_games": count,
 		"games":       games,

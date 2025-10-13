@@ -11,9 +11,12 @@ import (
 )
 
 // CartHandler handles cart retrieval
+// ฟังก์ชันสำหรับดึงข้อมูลตะกร้าสินค้าของผู้ใช้
 func CartHandler(w http.ResponseWriter, r *http.Request) {
+	// ดึง User-ID จาก header (ถูกตั้งค่าโดย middleware การยืนยันตัวตน)
 	userID := r.Header.Get("User-ID")
 
+	// ดึงข้อมูลสินค้าในตะกร้าจากฐานข้อมูล
 	rows, err := db.Query(`
 		SELECT g.id, g.name, g.price, c.name as category, g.image_url, ci.quantity
 		FROM cart_items ci
@@ -31,6 +34,7 @@ func CartHandler(w http.ResponseWriter, r *http.Request) {
 	var cartItems []map[string]interface{}
 	total := 0.0
 
+	// อ่านข้อมูลสินค้าในตะกร้าทีละแถว
 	for rows.Next() {
 		var item struct {
 			ID       int     `json:"id"`
@@ -45,9 +49,11 @@ func CartHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// คำนวณราคารวมสำหรับสินค้านี้
 		itemTotal := item.Price * float64(item.Quantity)
 		total += itemTotal
 
+		// เพิ่มสินค้าลงในรายการ
 		cartItems = append(cartItems, map[string]interface{}{
 			"game_id":   item.ID,
 			"name":      item.Name,
@@ -59,6 +65,7 @@ func CartHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// ส่ง response กลับไปพร้อมข้อมูลตะกร้า
 	utils.JSONResponse(w, map[string]interface{}{
 		"items":      cartItems,
 		"total":      total,
@@ -67,24 +74,29 @@ func CartHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // AddToCartHandler handles adding games to cart
+// ฟังก์ชันสำหรับเพิ่มเกมลงในตะกร้าสินค้า
 func AddToCartHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด POST หรือไม่
 	if r.Method != "POST" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// ดึง User-ID จาก header
 	userID := r.Header.Get("User-ID")
 
+	// โครงสร้างสำหรับเก็บข้อมูลจาก request
 	var req struct {
-		GameID int `json:"game_id"`
+		GameID int `json:"game_id"` // ID ของเกมที่ต้องการเพิ่ม
 	}
 
+	// แปลง JSON request body เป็น struct
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Check if user already owns the game
+	// ตรวจสอบว่าผู้ใช้เป็นเจ้าของเกมนี้อยู่แล้วหรือไม่
 	var owned bool
 	err := db.QueryRow(`
 		SELECT EXISTS(
@@ -101,7 +113,7 @@ func AddToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user's cart ID
+	// ดึง cart_id ของผู้ใช้
 	var cartID int
 	err = db.QueryRow("SELECT id FROM carts WHERE user_id = ?", userID).Scan(&cartID)
 	if err != nil {
@@ -109,7 +121,8 @@ func AddToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add to cart
+	// เพิ่มเกมลงในตะกร้า
+	// ใช้ ON DUPLICATE KEY UPDATE เพื่อเพิ่มจำนวนแทนการสร้างรายการใหม่ถ้ามีอยู่แล้ว
 	_, err = db.Exec(`
 		INSERT INTO cart_items (cart_id, game_id, quantity) 
 		VALUES (?, ?, 1)
@@ -120,30 +133,36 @@ func AddToCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ส่ง response สำเร็จกลับไป
 	utils.JSONResponse(w, map[string]string{
 		"message": "Game added to cart",
 	}, http.StatusOK)
 }
 
 // RemoveFromCartHandler handles removing games from cart
+// ฟังก์ชันสำหรับลบเกมออกจากตะกร้าสินค้า
 func RemoveFromCartHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด POST หรือไม่
 	if r.Method != "POST" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// ดึง User-ID จาก header
 	userID := r.Header.Get("User-ID")
 
+	// โครงสร้างสำหรับเก็บข้อมูลจาก request
 	var req struct {
-		GameID int `json:"game_id"`
+		GameID int `json:"game_id"` // ID ของเกมที่ต้องการลบ
 	}
 
+	// แปลง JSON request body เป็น struct
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Get user's cart ID
+	// ดึง cart_id ของผู้ใช้
 	var cartID int
 	err := db.QueryRow("SELECT id FROM carts WHERE user_id = ?", userID).Scan(&cartID)
 	if err != nil {
@@ -151,45 +170,51 @@ func RemoveFromCartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove from cart
+	// ลบเกมออกจากตะกร้า
 	_, err = db.Exec("DELETE FROM cart_items WHERE cart_id = ? AND game_id = ?", cartID, req.GameID)
 	if err != nil {
 		utils.JSONError(w, "Error removing from cart", http.StatusInternalServerError)
 		return
 	}
 
+	// ส่ง response สำเร็จกลับไป
 	utils.JSONResponse(w, map[string]string{
 		"message": "Game removed from cart",
 	}, http.StatusOK)
 }
 
 // CheckoutHandler handles cart checkout and purchase
+// ฟังก์ชันสำหรับชำระเงินและซื้อสินค้าในตะกร้า
 func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด POST หรือไม่
 	if r.Method != "POST" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// ดึงและแปลง User-ID จาก header
 	userIDStr := r.Header.Get("User-ID")
 	userID, _ := strconv.Atoi(userIDStr)
 
+	// โครงสร้างสำหรับเก็บข้อมูลจาก request
 	var req struct {
-		DiscountCode string `json:"discount_code"`
+		DiscountCode string `json:"discount_code"` // รหัสส่วนลด (ถ้ามี)
 	}
 
+	// แปลง JSON request body เป็น struct
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Start transaction
+	// เริ่มต้น transaction เพื่อความปลอดภัยของข้อมูล
 	tx, err := db.Begin()
 	if err != nil {
 		utils.JSONError(w, "Error starting transaction", http.StatusInternalServerError)
 		return
 	}
 
-	// Get cart items and total
+	// ดึงข้อมูลสินค้าในตะกร้าและคำนวณราคารวม
 	rows, err := tx.Query(`
 		SELECT g.id, g.name, g.price, ci.quantity
 		FROM cart_items ci
@@ -204,6 +229,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close() // ✅ ใช้ defer เพื่อปิด rows
 
+	// โครงสร้างสำหรับเก็บข้อมูลสินค้าในตะกร้า
 	var cartItems []struct {
 		GameID   int
 		Name     string
@@ -212,6 +238,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	total := 0.0
 
+	// อ่านข้อมูลสินค้าในตะกร้าทีละแถว
 	for rows.Next() {
 		var item struct {
 			GameID   int
@@ -228,19 +255,21 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		total += item.Price * float64(item.Quantity)
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err := rows.Err(); err != nil {
 		tx.Rollback()
 		utils.JSONError(w, "Error reading cart items", http.StatusInternalServerError)
 		return
 	}
 
+	// ตรวจสอบว่าตะกร้าว่างหรือไม่
 	if len(cartItems) == 0 {
 		tx.Rollback()
 		utils.JSONError(w, "Cart is empty", http.StatusBadRequest)
 		return
 	}
 
-	// Check for duplicate games in library
+	// ตรวจสอบว่าเกมในตะกร้ามีอยู่ในคลังเกมของผู้ใช้แล้วหรือไม่
 	for _, item := range cartItems {
 		var owned bool
 		err := tx.QueryRow(`
@@ -260,7 +289,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply discount if provided
+	// นำส่วนลดไปใช้ (ถ้ามี)
 	var discountCodeID *int
 	var discountValue float64
 	finalAmount := total
@@ -308,7 +337,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Check discount validity
+			// ตรวจสอบความถูกต้องของรหัสส่วนลด
 			now := time.Now()
 			if startDate != nil && now.Before(*startDate) {
 				tx.Rollback()
@@ -326,7 +355,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Check usage limit
+			// ตรวจสอบขีดจำกัดการใช้งาน
 			if discount.UsageLimit != nil {
 				var usageCount int
 				err := tx.QueryRow(`
@@ -346,7 +375,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Check if user already used this code
+			// ตรวจสอบว่าผู้ใช้ใช้รหัสส่วนลดนี้ไปแล้วหรือไม่
 			if discount.SingleUsePerUser {
 				var used bool
 				err := tx.QueryRow(`
@@ -367,7 +396,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Apply discount
+			// นำส่วนลดไปใช้
 			if discount.Type == "percent" {
 				discountValue = total * (discount.Value / 100)
 			} else {
@@ -392,7 +421,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		// ถ้า err == sql.ErrNoRows ก็แค่ไม่ใช้ส่วนลด (ไม่ต้องทำอะไร)
 	}
 
-	// Check wallet balance
+	// ตรวจสอบยอดเงินในกระเป๋าเงิน
 	var walletBalance float64
 	err = tx.QueryRow("SELECT wallet_balance FROM users WHERE id = ?", userID).Scan(&walletBalance)
 	if err != nil {
@@ -407,7 +436,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create purchase record
+	// สร้างบันทึกการซื้อ
 	result, err := tx.Exec(`
 		INSERT INTO purchases (user_id, total_amount, discount_code_id, final_amount)
 		VALUES (?, ?, ?, ?)
@@ -420,9 +449,9 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 
 	purchaseID, _ := result.LastInsertId()
 
-	// Add purchase items and mark games as purchased
+	// เพิ่มรายการสินค้าที่ซื้อและทำเครื่องหมายว่าเกมถูกซื้อแล้ว
 	for _, item := range cartItems {
-		// Add to purchase items
+		// เพิ่มใน purchase_items
 		_, err := tx.Exec(`
 			INSERT INTO purchase_items (purchase_id, game_id, price_at_purchase)
 			VALUES (?, ?, ?)
@@ -433,7 +462,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Add to purchased games
+		// เพิ่มใน purchased_games (คลังเกมของผู้ใช้)
 		_, err = tx.Exec(`
 			INSERT INTO purchased_games (user_id, game_id) 
 			VALUES (?, ?)
@@ -444,7 +473,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Update ranking sales count
+		// อัพเดทจำนวนยอดขายใน ranking
 		_, err = tx.Exec(`
 			INSERT INTO ranking (game_id, sales_count) 
 			VALUES (?, 1)
@@ -457,7 +486,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Update rankings order
+	// อัพเดทอันดับการจัดอันดับ
 	_, err = tx.Exec(`
 		UPDATE ranking 
 		SET rank_position = (
@@ -473,7 +502,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record discount usage
+	// บันทึกการใช้งานส่วนลด
 	if discountCodeID != nil {
 		_, err = tx.Exec(`
             INSERT INTO user_discount_codes (user_id, discount_code_id)
@@ -508,7 +537,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Update wallet balance
+	// อัพเดทยอดเงินในกระเป๋าเงิน
 	_, err = tx.Exec("UPDATE users SET wallet_balance = wallet_balance - ? WHERE id = ?",
 		finalAmount, userID)
 	if err != nil {
@@ -517,7 +546,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record transaction
+	// บันทึกธุรกรรม
 	_, err = tx.Exec(`
 		INSERT INTO user_transactions (user_id, type, amount, description)
 		VALUES (?, 'purchase', ?, ?)
@@ -528,7 +557,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clear cart
+	// ล้างตะกร้าสินค้า
 	_, err = tx.Exec("DELETE FROM cart_items WHERE cart_id = (SELECT id FROM carts WHERE user_id = ?)", userID)
 	if err != nil {
 		tx.Rollback()
@@ -536,6 +565,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ยืนยัน transaction
 	if err := tx.Commit(); err != nil {
 		utils.JSONError(w, "Error completing purchase", http.StatusInternalServerError)
 		return
@@ -544,6 +574,7 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("✅ Checkout completed: user_id=%d, purchase_id=%d, total=%.2f, final=%.2f\n",
 		userID, purchaseID, total, finalAmount)
 
+	// ส่ง response การซื้อสำเร็จกลับไป
 	utils.JSONResponse(w, map[string]interface{}{
 		"message":      "Purchase completed successfully",
 		"purchase_id":  purchaseID,
@@ -555,18 +586,22 @@ func CheckoutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ApplyDiscountHandler handles discount code validation and application
+// ฟังก์ชันสำหรับตรวจสอบและนำรหัสส่วนลดไปใช้
 func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด POST หรือไม่
 	if r.Method != "POST" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// โครงสร้างสำหรับเก็บข้อมูลจาก request
 	var req struct {
-		Code        string  `json:"code"`
-		TotalAmount float64 `json:"total_amount"`
-		UserID      int     `json:"user_id"`
+		Code        string  `json:"code"`         // รหัสส่วนลด
+		TotalAmount float64 `json:"total_amount"` // ราคารวมก่อนหักส่วนลด
+		UserID      int     `json:"user_id"`      // ID ผู้ใช้
 	}
 
+	// แปลง JSON request body เป็น struct
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -574,7 +609,7 @@ func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("🔍 Applying discount code: %s for user %d, total: %.2f\n", req.Code, req.UserID, req.TotalAmount)
 
-	// Check if discount code exists and is valid
+	// โครงสร้างสำหรับเก็บข้อมูลส่วนลดจากฐานข้อมูล
 	var discount struct {
 		ID               int
 		Type             string
@@ -590,6 +625,7 @@ func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
 	// ใช้ sql.NullString เพื่อรับค่า date จาก database
 	var startDateStr, endDateStr sql.NullString
 
+	// ค้นหารหัสส่วนลดในฐานข้อมูล
 	err := db.QueryRow(`
         SELECT id, type, value, min_total, usage_limit, single_use_per_user, 
                active, start_date, end_date
@@ -633,10 +669,10 @@ func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("✅ Discount found: ID=%d, StartDate=%v, EndDate=%v\n",
 		discount.ID, discount.StartDate, discount.EndDate)
 
-	// Validate discount code
+	// ตรวจสอบความถูกต้องของรหัสส่วนลด
 	now := time.Now()
 
-	// Check date validity
+	// ตรวจสอบความถูกต้องของวันที่
 	if discount.StartDate != nil && now.Before(*discount.StartDate) {
 		utils.JSONError(w, "Discount code not yet valid", http.StatusBadRequest)
 		return
@@ -646,13 +682,13 @@ func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check minimum total
+	// ตรวจสอบยอดซื้อขั้นต่ำ
 	if discount.MinTotal > 0 && req.TotalAmount < discount.MinTotal {
 		utils.JSONError(w, fmt.Sprintf("Minimum purchase of $%.2f required", discount.MinTotal), http.StatusBadRequest)
 		return
 	}
 
-	// Check usage limit
+	// ตรวจสอบขีดจำกัดการใช้งาน
 	if discount.UsageLimit != nil {
 		var usageCount int
 		err := db.QueryRow(`
@@ -671,7 +707,7 @@ func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check if user already used this code (for single-use codes)
+	// ตรวจสอบว่าผู้ใช้ใช้รหัสส่วนลดนี้ไปแล้วหรือไม่ (สำหรับรหัสที่ใช้ได้ครั้งเดียว)
 	if discount.SingleUsePerUser {
 		var used bool
 		err := db.QueryRow(`
@@ -689,7 +725,7 @@ func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Calculate discount amount
+	// คำนวณจำนวนส่วนลด
 	var discountAmount float64
 	var finalAmount float64
 
@@ -707,7 +743,7 @@ func ApplyDiscountHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("✅ Discount applied: Code=%s, Type=%s, Value=%.2f, Discount=%.2f, Final=%.2f\n",
 		req.Code, discount.Type, discount.Value, discountAmount, finalAmount)
 
-	// Return successful response
+	// ส่ง response การใช้ส่วนลดสำเร็จกลับไป
 	utils.JSONResponse(w, map[string]interface{}{
 		"valid":           true,
 		"discount_id":     discount.ID,

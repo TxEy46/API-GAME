@@ -15,40 +15,45 @@ import (
 )
 
 // AdminAddGameHandler handles adding new games
+// ฟังก์ชันสำหรับผู้ดูแลระบบเพิ่มเกมใหม่เข้าสู่ระบบ
 func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด POST หรือไม่
 	if r.Method != "POST" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Parse request based on Content-Type
+	// ตรวจสอบประเภทของข้อมูลที่ส่งมา (JSON หรือ Form-data)
 	contentType := r.Header.Get("Content-Type")
+
+	// โครงสร้างสำหรับเก็บข้อมูลจาก request
 	var req struct {
-		Name        string  `json:"name"`
-		Price       float64 `json:"price"`
-		CategoryID  int     `json:"category_id"`
-		Description string  `json:"description"`
-		ReleaseDate string  `json:"release_date"` // Optional - ถ้าไม่ส่งจะใช้วันที่ปัจจุบัน
+		Name        string  `json:"name"`         // ชื่อเกม (จำเป็น)
+		Price       float64 `json:"price"`        // ราคาเกม (จำเป็น)
+		CategoryID  int     `json:"category_id"`  // ID หมวดหมู่ (จำเป็น)
+		Description string  `json:"description"`  // คำอธิบายเกม
+		ReleaseDate string  `json:"release_date"` // วันที่วางจำหน่าย (ถ้าไม่ส่งจะใช้วันที่ปัจจุบัน)
 	}
 
-	var imageURL string
+	var imageURL string // ตัวแปรเก็บ URL ของภาพเกม
 
+	// กรณีส่งข้อมูลแบบ Form-data (มีการอัพโหลดไฟล์ภาพ)
 	if strings.Contains(contentType, "multipart/form-data") {
-		// Handle multipart form (มีไฟล์ภาพ)
+		// แยกวิเคราะห์ form data ขนาดสูงสุด 10MB
 		err := r.ParseMultipartForm(10 << 20) // 10 MB limit
 		if err != nil {
 			utils.JSONError(w, "Error parsing form data", http.StatusBadRequest)
 			return
 		}
 
-		// Get form values
+		// ดึงค่าจากฟอร์ม
 		req.Name = r.FormValue("name")
 		priceStr := r.FormValue("price")
 		categoryIDStr := r.FormValue("category_id")
 		req.Description = r.FormValue("description")
 		req.ReleaseDate = r.FormValue("release_date") // Optional
 
-		// Convert string to numbers
+		// แปลงสตริงเป็นตัวเลข
 		if priceStr != "" {
 			req.Price, err = strconv.ParseFloat(priceStr, 64)
 			if err != nil {
@@ -65,12 +70,12 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Handle image file upload
+		// จัดการกับการอัพโหลดไฟล์ภาพ
 		file, header, err := r.FormFile("image")
 		if err == nil {
 			defer file.Close()
 
-			// Validate file type
+			// ตรวจสอบประเภทไฟล์ที่อนุญาต
 			allowedTypes := map[string]bool{
 				".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
 				".webp": true, ".avif": true,
@@ -81,11 +86,11 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Create unique filename
+			// สร้างชื่อไฟล์ที่ไม่ซ้ำกันโดยใช้ timestamp
 			filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
 			filePath := filepath.Join("uploads", filename)
 
-			// Save file
+			// สร้างไฟล์ใหม่เพื่อบันทึกภาพ
 			dst, err := os.Create(filePath)
 			if err != nil {
 				utils.JSONError(w, "Error saving image", http.StatusInternalServerError)
@@ -93,6 +98,7 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			defer dst.Close()
 
+			// คัดลอกข้อมูลภาพจาก request ไปยังไฟล์ปลายทาง
 			if _, err := io.Copy(dst, file); err != nil {
 				utils.JSONError(w, "Error copying image", http.StatusInternalServerError)
 				return
@@ -102,14 +108,14 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("✅ Image uploaded: %s\n", imageURL)
 		}
 	} else {
-		// Handle JSON data (ไม่มีไฟล์ภาพ)
+		// กรณีส่งข้อมูลแบบ JSON (ไม่มีไฟล์ภาพ)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
 	}
 
-	// Validate required fields
+	// ตรวจสอบความถูกต้องของข้อมูลที่จำเป็น
 	if req.Name == "" {
 		utils.JSONError(w, "Game name is required", http.StatusBadRequest)
 		return
@@ -125,10 +131,10 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ตั้งค่า release_date อัตโนมัติเป็นวันที่ปัจจุบันถ้าไม่ได้รับมา
+	// จัดการวันที่วางจำหน่าย
 	var releaseDate interface{}
 	if req.ReleaseDate != "" {
-		// ถ้ารับ release_date มา ให้ใช้ค่าที่ส่งมา
+		// ถ้ารับ release_date มา ให้แปลงเป็นรูปแบบวันที่และใช้ค่าที่ส่งมา
 		date, err := time.Parse("2006-01-02", req.ReleaseDate)
 		if err != nil {
 			utils.JSONError(w, "Invalid release date format. Use YYYY-MM-DD", http.StatusBadRequest)
@@ -143,10 +149,11 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("📅 Using current date as release date: %s\n", currentDate)
 	}
 
-	// Insert game
+	// เพิ่มเกมลงฐานข้อมูล
 	var result sql.Result
 	var err error
 
+	// สร้างคำสั่ง SQL สำหรับเพิ่มเกม โดยตรวจสอบว่ามี release_date หรือไม่
 	if releaseDate != nil {
 		result, err = db.Exec(`
 			INSERT INTO games (name, price, category_id, image_url, description, release_date)
@@ -161,7 +168,7 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		fmt.Printf("❌ Error adding game: %v\n", err)
-		// Delete uploaded file if database insert fails
+		// ลบไฟล์ที่อัพโหลดไว้ถ้าเพิ่มข้อมูลในฐานข้อมูลล้มเหลว
 		if imageURL != "" {
 			os.Remove(strings.TrimPrefix(imageURL, "/"))
 		}
@@ -169,21 +176,24 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ดึง ID ของเกมที่เพิ่งเพิ่ม
 	gameID, _ := result.LastInsertId()
 
-	// Initialize ranking with 0 sales
+	// เริ่มต้นระบบจัดอันดับด้วยยอดขาย 0
 	_, err = db.Exec("INSERT INTO ranking (game_id, sales_count) VALUES (?, 0)", gameID)
 	if err != nil {
 		fmt.Printf("⚠️ Error initializing ranking: %v\n", err)
-		// Continue even if ranking fails
+		// ดำเนินการต่อแม้ว่าการเริ่มต้นระบบจัดอันดับจะล้มเหลว
 	}
 
 	fmt.Printf("✅ Game added successfully: ID=%d, Name=%s\n", gameID, req.Name)
 
+	// ส่ง response กลับไปยัง client
 	utils.JSONResponse(w, map[string]interface{}{
 		"message": "Game added successfully",
 		"game_id": gameID,
 		"release_date": func() string {
+			// แปลง releaseDate ให้เป็นสตริงรูปแบบ YYYY-MM-DD
 			if date, ok := releaseDate.(time.Time); ok {
 				return date.Format("2006-01-02")
 			}
@@ -193,13 +203,16 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminUpdateGameHandler handles updating games
+// ฟังก์ชันสำหรับผู้ดูแลระบบอัพเดทข้อมูลเกมที่มีอยู่
 func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด PUT หรือ PATCH
 	if r.Method != "PUT" && r.Method != "PATCH" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	// ดึง game_id จาก URL path
+	// ตัวอย่าง URL: /admin/games/123 → gameID = 123
 	pathParts := strings.Split(r.URL.Path, "/")
 	gameIDStr := pathParts[len(pathParts)-1]
 	gameID, err := strconv.Atoi(gameIDStr)
@@ -210,7 +223,7 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("🔍 Admin updating game ID: %d\n", gameID)
 
-	// Parse request based on Content-Type
+	// ตรวจสอบประเภทของข้อมูลที่ส่งมา
 	contentType := r.Header.Get("Content-Type")
 	var req struct {
 		Name        string  `json:"name"`
@@ -222,22 +235,22 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 
 	var imageURL string
 
+	// กรณีส่งข้อมูลแบบ Form-data
 	if strings.Contains(contentType, "multipart/form-data") {
-		// Handle multipart form
 		err = r.ParseMultipartForm(10 << 20)
 		if err != nil {
 			utils.JSONError(w, "Error parsing form data", http.StatusBadRequest)
 			return
 		}
 
-		// Get form values
+		// ดึงค่าจากฟอร์ม
 		req.Name = r.FormValue("name")
 		priceStr := r.FormValue("price")
 		categoryIDStr := r.FormValue("category_id")
 		req.Description = r.FormValue("description")
 		req.ReleaseDate = r.FormValue("release_date")
 
-		// Convert string to numbers
+		// แปลงสตริงเป็นตัวเลข
 		if priceStr != "" {
 			req.Price, err = strconv.ParseFloat(priceStr, 64)
 			if err != nil {
@@ -254,12 +267,12 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Handle image file upload
+		// จัดการกับการอัพโหลดไฟล์ภาพใหม่
 		file, header, err := r.FormFile("image")
 		if err == nil {
 			defer file.Close()
 
-			// Validate file type
+			// ตรวจสอบประเภทไฟล์
 			allowedTypes := map[string]bool{
 				".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
 				".webp": true, ".avif": true,
@@ -270,11 +283,11 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Create unique filename
+			// สร้างชื่อไฟล์ใหม่ที่ไม่ซ้ำกัน
 			filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
 			filePath := filepath.Join("uploads", filename)
 
-			// Save file
+			// บันทึกไฟล์ภาพใหม่
 			dst, err := os.Create(filePath)
 			if err != nil {
 				utils.JSONError(w, "Error saving image", http.StatusInternalServerError)
@@ -291,17 +304,18 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("✅ New image uploaded: %s\n", imageURL)
 		}
 	} else {
-		// Handle JSON data
+		// กรณีส่งข้อมูลแบบ JSON
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
 	}
 
-	// Build update query dynamically
-	updateFields := []string{}
-	args := []interface{}{}
+	// สร้างคำสั่งอัพเดทแบบไดนามิกตามฟิลด์ที่มีการส่งมา
+	updateFields := []string{} // เก็บชื่อฟิลด์ที่ต้องการอัพเดท
+	args := []interface{}{}    // เก็บค่าที่จะใช้ในคำสั่ง SQL
 
+	// ตรวจสอบแต่ละฟิลด์และเพิ่มลงใน query ถ้ามีค่า
 	if req.Name != "" {
 		updateFields = append(updateFields, "name = ?")
 		args = append(args, req.Name)
@@ -333,7 +347,7 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if imageURL != "" {
-		// Get old image URL to delete later
+		// ดึง URL ภาพเก่าเพื่อลบในภายหลัง
 		var oldImageURL sql.NullString
 		db.QueryRow("SELECT image_url FROM games WHERE id = ?", gameID).Scan(&oldImageURL)
 
@@ -341,19 +355,21 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 		args = append(args, imageURL)
 	}
 
+	// ตรวจสอบว่ามีฟิลด์ที่จะอัพเดทหรือไม่
 	if len(updateFields) == 0 {
 		utils.JSONError(w, "No fields to update", http.StatusBadRequest)
 		return
 	}
 
-	// Add game ID to args
+	// เพิ่ม game ID ไปยัง args สำหรับเงื่อนไข WHERE
 	args = append(args, gameID)
 
-	// Execute update
+	// สร้างและ execute คำสั่ง UPDATE
 	query := fmt.Sprintf("UPDATE games SET %s WHERE id = ?", strings.Join(updateFields, ", "))
 	result, err := db.Exec(query, args...)
 	if err != nil {
 		fmt.Printf("❌ Error updating game: %v\n", err)
+		// ลบไฟล์ภาพใหม่ถ้าอัพเดทฐานข้อมูลล้มเหลว
 		if imageURL != "" {
 			os.Remove(strings.TrimPrefix(imageURL, "/"))
 		}
@@ -361,6 +377,7 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ตรวจสอบว่ามีแถวถูกอัพเดทจริงหรือไม่
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		if imageURL != "" {
@@ -370,13 +387,14 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete old image file if new image was uploaded
+	// ลบไฟล์ภาพเก่าถ้ามีการอัพโหลดภาพใหม่
 	if imageURL != "" {
-		// Delete old image file
+		// ดึง URL ภาพเก่าจากฐานข้อมูล
 		var oldImageURL sql.NullString
 		db.QueryRow("SELECT image_url FROM games WHERE id = ?", gameID).Scan(&oldImageURL)
 		if oldImageURL.Valid && oldImageURL.String != "" {
 			oldFilePath := strings.TrimPrefix(oldImageURL.String, "/")
+			// ตรวจสอบว่าไฟล์มีอยู่จริงก่อนลบ
 			if _, err := os.Stat(oldFilePath); err == nil {
 				os.Remove(oldFilePath)
 				fmt.Printf("🗑️ Deleted old image: %s\n", oldFilePath)
@@ -386,6 +404,7 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Game updated successfully: ID=%d\n", gameID)
 
+	// ส่ง response สำเร็จกลับไป
 	utils.JSONResponse(w, map[string]interface{}{
 		"message": "Game updated successfully",
 		"game_id": gameID,
@@ -393,7 +412,9 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminDeleteGameHandler handles deleting games
+// ฟังก์ชันสำหรับผู้ดูแลระบบลบเกมออกจากระบบ
 func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด DELETE หรือไม่
 	if r.Method != "DELETE" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -410,7 +431,7 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("🔍 Admin deleting game ID: %d\n", gameID)
 
-	// Get image URL before deletion (เพื่อลบไฟล์ภาพ)
+	// ดึง URL ภาพก่อนลบ (เพื่อลบไฟล์ภาพออกจากระบบไฟล์)
 	var imageURL sql.NullString
 	err = db.QueryRow("SELECT image_url FROM games WHERE id = ?", gameID).Scan(&imageURL)
 	if err != nil {
@@ -422,22 +443,24 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start transaction
+	// เริ่มต้น transaction เพื่อความปลอดภัยของข้อมูล
 	tx, err := db.Begin()
 	if err != nil {
 		utils.JSONError(w, "Error starting transaction", http.StatusInternalServerError)
 		return
 	}
 
-	// Delete from related tables first
+	// ลบข้อมูลที่เกี่ยวข้องตามลำดับเพื่อป้องกัน foreign key constraint violations
+
+	// 1. ลบจากตาราง ranking (ข้อมูลการจัดอันดับ)
 	_, err = tx.Exec("DELETE FROM ranking WHERE game_id = ?", gameID)
 	if err != nil {
-		tx.Rollback()
+		tx.Rollback() // ยกเลิก transaction ถ้าล้มเหลว
 		utils.JSONError(w, "Error deleting game ranking", http.StatusInternalServerError)
 		return
 	}
 
-	// Delete from cart_items
+	// 2. ลบจากตาราง cart_items (เกมในตะกร้าสินค้าของผู้ใช้)
 	_, err = tx.Exec("DELETE FROM cart_items WHERE game_id = ?", gameID)
 	if err != nil {
 		tx.Rollback()
@@ -445,7 +468,7 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete from purchase_items (ต้องลบผ่าน purchase_items ก่อน)
+	// 3. ลบจากตาราง purchase_items (รายการเกมในการซื้อ)
 	_, err = tx.Exec("DELETE pi FROM purchase_items pi WHERE pi.game_id = ?", gameID)
 	if err != nil {
 		tx.Rollback()
@@ -453,7 +476,7 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete from purchased_games
+	// 4. ลบจากตาราง purchased_games (เกมในคลังเกมของผู้ใช้)
 	_, err = tx.Exec("DELETE FROM purchased_games WHERE game_id = ?", gameID)
 	if err != nil {
 		tx.Rollback()
@@ -461,7 +484,7 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Finally delete the game
+	// 5. ลบเกมจากตาราง games (ลบข้อมูลหลัก)
 	result, err := tx.Exec("DELETE FROM games WHERE id = ?", gameID)
 	if err != nil {
 		tx.Rollback()
@@ -469,6 +492,7 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ตรวจสอบว่ามีเกมถูกลบจริงหรือไม่
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		tx.Rollback()
@@ -476,14 +500,16 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ยืนยัน transaction
 	if err := tx.Commit(); err != nil {
 		utils.JSONError(w, "Error committing transaction", http.StatusInternalServerError)
 		return
 	}
 
-	// Delete image file if exists
+	// ลบไฟล์ภาพถ้ามี
 	if imageURL.Valid && imageURL.String != "" {
 		filePath := strings.TrimPrefix(imageURL.String, "/")
+		// ตรวจสอบว่าไฟล์มีอยู่จริงก่อนลบ
 		if _, err := os.Stat(filePath); err == nil {
 			os.Remove(filePath)
 			fmt.Printf("🗑️ Deleted game image: %s\n", filePath)
@@ -492,6 +518,7 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Game deleted successfully: ID=%d\n", gameID)
 
+	// ส่ง response สำเร็จกลับไป
 	utils.JSONResponse(w, map[string]interface{}{
 		"message": "Game deleted successfully",
 		"game_id": gameID,
@@ -499,6 +526,7 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // AdminUsersHandler handles admin user management
+// ฟังก์ชันสำหรับผู้ดูแลระบบดึงรายการผู้ใช้ทั้งหมด (ไม่รวม admin)
 func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -507,7 +535,7 @@ func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("🔍 Admin fetching all users (excluding admins)\n")
 
-	// ไม่รวม admin users ในผลลัพธ์
+	// ดึงข้อมูลผู้ใช้ทั้งหมดที่ไม่ใช่ admin เรียงตามวันที่สร้างล่าสุด
 	rows, err := db.Query(`
 		SELECT id, username, email, role, 
 		       DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s') as created_date,
@@ -526,6 +554,7 @@ func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 	var users []map[string]interface{}
 	count := 0
 
+	// อ่านข้อมูลผู้ใช้ทีละแถว
 	for rows.Next() {
 		var id int
 		var username, email, role string
@@ -537,6 +566,7 @@ func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// สร้าง object ผู้ใช้
 		user := map[string]interface{}{
 			"id":             id,
 			"username":       username,
@@ -551,6 +581,7 @@ func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("✅ User: ID=%d, Username=%s, Role=%s\n", id, username, role)
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during users rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing users", http.StatusInternalServerError)
@@ -559,54 +590,63 @@ func AdminUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Total users found (excluding admins): %d\n", count)
 
+	// ตรวจสอบว่า users ไม่เป็น nil
 	if users == nil {
 		users = []map[string]interface{}{}
 	}
 
+	// ส่ง response กลับไป
 	utils.JSONResponse(w, users, http.StatusOK)
 }
 
 // AdminStatsHandler handles admin statistics
+// ฟังก์ชันสำหรับผู้ดูแลระบบดึงสถิติรวมของระบบ
 func AdminStatsHandler(w http.ResponseWriter, r *http.Request) {
+	// โครงสร้างสำหรับเก็บสถิติ
 	var stats struct {
-		TotalUsers     int     `json:"total_users"`
-		TotalGames     int     `json:"total_games"`
-		TotalSales     float64 `json:"total_sales"`
-		TotalPurchases int     `json:"total_purchases"`
+		TotalUsers     int     `json:"total_users"`     // จำนวนผู้ใช้ทั้งหมด
+		TotalGames     int     `json:"total_games"`     // จำนวนเกมทั้งหมด
+		TotalSales     float64 `json:"total_sales"`     // ยอดขายรวมทั้งหมด
+		TotalPurchases int     `json:"total_purchases"` // จำนวนการซื้อทั้งหมด
 	}
 
-	// Get total users
+	// ดึงจำนวนผู้ใช้ทั้งหมด
 	db.QueryRow("SELECT COUNT(*) FROM users").Scan(&stats.TotalUsers)
 
-	// Get total games
+	// ดึงจำนวนเกมทั้งหมด
 	db.QueryRow("SELECT COUNT(*) FROM games").Scan(&stats.TotalGames)
 
-	// Get total sales
+	// ดึงยอดขายรวมทั้งหมด (ใช้ COALESCE เพื่อป้องกัน NULL)
 	db.QueryRow("SELECT COALESCE(SUM(final_amount), 0) FROM purchases").Scan(&stats.TotalSales)
 
-	// Get total purchases
+	// ดึงจำนวนการซื้อทั้งหมด
 	db.QueryRow("SELECT COUNT(*) FROM purchases").Scan(&stats.TotalPurchases)
 
+	// ส่งสถิติกลับไป
 	utils.JSONResponse(w, stats, http.StatusOK)
 }
 
 // AdminTransactionsHandler handles admin transaction management
+// ฟังก์ชันหลักสำหรับจัดการธุรกรรมโดยผู้ดูแลระบบ
 func AdminTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("💰 AdminTransactionsHandler: %s %s\n", r.Method, r.URL.Path)
 
+	// ตรวจสอบเมธอดและเรียกฟังก์ชันที่เหมาะสม
 	switch r.Method {
 	case "GET":
-		getAllTransactions(w, r)
+		getAllTransactions(w, r) // ดึงธุรกรรมทั้งหมด
 	default:
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 // AdminUserTransactionsHandler handles user-specific transaction management for admin
+// ฟังก์ชันสำหรับจัดการธุรกรรมเฉพาะผู้ใช้โดยผู้ดูแลระบบ
 func AdminUserTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("💰 AdminUserTransactionsHandler: %s %s\n", r.Method, r.URL.Path)
 
-	// Extract user ID จาก URL
+	// แยก user ID จาก URL path
+	// ตัวอย่าง URL: /admin/transactions/user/123 → userID = 123
 	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(pathParts) < 4 {
 		utils.JSONError(w, "User ID required", http.StatusBadRequest)
@@ -619,28 +659,31 @@ func AdminUserTransactionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ตรวจสอบเมธอดและเรียกฟังก์ชันที่เหมาะสม
 	switch r.Method {
 	case "GET":
-		getUserTransactions(w, r, userID)
+		getUserTransactions(w, r, userID) // ดึงธุรกรรมของผู้ใช้เฉพาะคน
 	default:
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
 // GET /admin/transactions - ดึงประวัติธุรกรรมทั้งหมด
+// ฟังก์ชันสำหรับดึงประวัติธุรกรรมทั้งหมดในระบบ (มี pagination และ filtering)
 func getAllTransactions(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("🔍 Fetching all transactions")
 
-	// รับ query parameters สำหรับ filtering
+	// รับ query parameters สำหรับ filtering และ pagination
 	query := r.URL.Query()
-	transactionType := query.Get("type")
-	limitStr := query.Get("limit")
-	offsetStr := query.Get("offset")
+	transactionType := query.Get("type") // ประเภทธุรกรรม (ฝากเงิน, ถอนเงิน, ซื้อเกม)
+	limitStr := query.Get("limit")       // จำนวนรายการต่อหน้า
+	offsetStr := query.Get("offset")     // ตำแหน่งเริ่มต้น
 
 	// ตั้งค่า default values
 	limit := 100
 	offset := 0
 
+	// แปลงค่า limit และ offset เป็นตัวเลข
 	if limitStr != "" {
 		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
 			limit = l
@@ -652,7 +695,7 @@ func getAllTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build query - แก้ไขตามโครงสร้างตารางจริง
+	// สร้างคำสั่ง SQL พื้นฐาน
 	baseQuery := `
 		SELECT 
 			t.id, t.user_id, u.username, t.type, t.amount, 
@@ -663,18 +706,22 @@ func getAllTransactions(w http.ResponseWriter, r *http.Request) {
 	var args []interface{}
 	whereClauses := []string{}
 
+	// เพิ่มเงื่อนไข WHERE ถ้ามีการกรองประเภทธุรกรรม
 	if transactionType != "" {
 		whereClauses = append(whereClauses, "t.type = ?")
 		args = append(args, transactionType)
 	}
 
+	// รวมเงื่อนไข WHERE ถ้ามี
 	if len(whereClauses) > 0 {
 		baseQuery += " WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
+	// เพิ่มการเรียงลำดับและ pagination
 	baseQuery += " ORDER BY t.created_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
+	// Execute query
 	rows, err := db.Query(baseQuery, args...)
 	if err != nil {
 		fmt.Printf("❌ Error fetching transactions: %v\n", err)
@@ -686,6 +733,7 @@ func getAllTransactions(w http.ResponseWriter, r *http.Request) {
 	var transactions []map[string]interface{}
 	count := 0
 
+	// อ่านข้อมูลธุรกรรมทีละแถว
 	for rows.Next() {
 		var id, userID int
 		var username, transactionType, description, createdAt string
@@ -697,6 +745,7 @@ func getAllTransactions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// สร้าง object ธุรกรรม
 		transaction := map[string]interface{}{
 			"id":          id,
 			"user_id":     userID,
@@ -711,6 +760,7 @@ func getAllTransactions(w http.ResponseWriter, r *http.Request) {
 		count++
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing transactions", http.StatusInternalServerError)
@@ -735,6 +785,7 @@ func getAllTransactions(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Total transactions found: %d (showing %d)\n", totalCount, count)
 
+	// ส่ง response กลับไปพร้อมข้อมูลธุรกรรมและข้อมูล pagination
 	utils.JSONResponse(w, map[string]interface{}{
 		"transactions": transactions,
 		"total":        totalCount,
@@ -746,6 +797,7 @@ func getAllTransactions(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /admin/transactions/user/{userID} - ดึงประวัติธุรกรรมของผู้ใช้เฉพาะคน
+// ฟังก์ชันสำหรับดึงประวัติธุรกรรมของผู้ใช้เฉพาะคน (มี pagination และ filtering)
 func getUserTransactions(w http.ResponseWriter, r *http.Request, userID int) {
 	fmt.Printf("🔍 Fetching transactions for user: ID=%d\n", userID)
 
@@ -782,7 +834,7 @@ func getUserTransactions(w http.ResponseWriter, r *http.Request, userID int) {
 		}
 	}
 
-	// Build query - แก้ไขตามโครงสร้างตารางจริง
+	// สร้างคำสั่ง SQL
 	baseQuery := `
 		SELECT 
 			t.id, t.type, t.amount, t.description, 
@@ -793,14 +845,17 @@ func getUserTransactions(w http.ResponseWriter, r *http.Request, userID int) {
 	var args []interface{}
 	args = append(args, userID)
 
+	// เพิ่มเงื่อนไขประเภทธุรกรรมถ้ามี
 	if transactionType != "" {
 		baseQuery += " AND t.type = ?"
 		args = append(args, transactionType)
 	}
 
+	// เพิ่มการเรียงลำดับและ pagination
 	baseQuery += " ORDER BY t.created_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
+	// Execute query
 	rows, err := db.Query(baseQuery, args...)
 	if err != nil {
 		fmt.Printf("❌ Error fetching user transactions: %v\n", err)
@@ -812,6 +867,7 @@ func getUserTransactions(w http.ResponseWriter, r *http.Request, userID int) {
 	var transactions []map[string]interface{}
 	count := 0
 
+	// อ่านข้อมูลธุรกรรมทีละแถว
 	for rows.Next() {
 		var id int
 		var transactionType, description, createdAt string
@@ -823,6 +879,7 @@ func getUserTransactions(w http.ResponseWriter, r *http.Request, userID int) {
 			continue
 		}
 
+		// สร้าง object ธุรกรรม
 		transaction := map[string]interface{}{
 			"id":          id,
 			"user_id":     userID,
@@ -837,6 +894,7 @@ func getUserTransactions(w http.ResponseWriter, r *http.Request, userID int) {
 		count++
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing user transactions", http.StatusInternalServerError)
@@ -884,6 +942,7 @@ func getUserTransactions(w http.ResponseWriter, r *http.Request, userID int) {
 
 	fmt.Printf("✅ Transactions found for user %s: %d (showing %d)\n", username, totalCount, count)
 
+	// ส่ง response กลับไปพร้อมข้อมูลธุรกรรมและข้อมูลผู้ใช้
 	utils.JSONResponse(w, map[string]interface{}{
 		"transactions": transactions,
 		"user":         userData,

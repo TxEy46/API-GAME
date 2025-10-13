@@ -12,10 +12,12 @@ import (
 )
 
 // AdminDiscountHandler handles discount code management
+// ฟังก์ชันหลักสำหรับจัดการรหัสส่วนลดโดยผู้ดูแลระบบ
 func AdminDiscountHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("🎯 AdminDiscountHandler: %s %s\n", r.Method, r.URL.Path)
 
 	// Extract ID จาก URL ถ้ามี
+	// ตัวอย่าง URL: /admin/discounts/123 → id = 123
 	var id int
 	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(pathParts) >= 3 {
@@ -24,24 +26,25 @@ func AdminDiscountHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// กำหนดการทำงานตาม HTTP Method
 	switch r.Method {
 	case "GET":
 		if id > 0 {
-			getDiscountByID(w, r, id)
+			getDiscountByID(w, r, id) // ดึงส่วนลดเฉพาะ ID
 		} else {
-			getAllDiscounts(w, r)
+			getAllDiscounts(w, r) // ดึงส่วนลดทั้งหมด
 		}
 	case "POST":
-		createDiscount(w, r)
+		createDiscount(w, r) // สร้างส่วนลดใหม่
 	case "PUT":
 		if id > 0 {
-			updateDiscountWithReset(w, r, id)
+			updateDiscountWithReset(w, r, id) // อัพเดทส่วนลด + รีเซ็ตการใช้งาน
 		} else {
 			utils.JSONError(w, "Discount ID required", http.StatusBadRequest)
 		}
 	case "DELETE":
 		if id > 0 {
-			deleteDiscountWithCleanup(w, r, id)
+			deleteDiscountWithCleanup(w, r, id) // ลบส่วนลด + ลบประวัติการใช้งาน
 		} else {
 			utils.JSONError(w, "Discount ID required", http.StatusBadRequest)
 		}
@@ -50,12 +53,13 @@ func AdminDiscountHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GET /admin/discounts - ดึงทั้งหมด
+// GET /admin/discounts - ดึงส่วนลดทั้งหมด
 func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
-	// เรียกตรวจสอบอัตโนมัติก่อนดึงข้อมูล
+	// เรียกตรวจสอบอัตโนมัติก่อนดึงข้อมูล (รันใน goroutine เพื่อไม่ให้ block request)
 	go autoDeactivateDiscounts()
 	fmt.Println("🔍 Fetching all discount codes")
 
+	// ดึงข้อมูลส่วนลดทั้งหมดพร้อมจำนวนการใช้งาน
 	rows, err := db.Query(`
 		SELECT 
 			dc.id, dc.code, dc.type, dc.value, dc.min_total, 
@@ -79,6 +83,7 @@ func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 	var discounts []map[string]interface{}
 	count := 0
 
+	// อ่านข้อมูลส่วนลดทีละแถว
 	for rows.Next() {
 		var id int
 		var code, discountType string
@@ -94,6 +99,7 @@ func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// สร้าง object ส่วนลด
 		discount := map[string]interface{}{
 			"id":                  id,
 			"code":                code,
@@ -107,6 +113,7 @@ func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 			"usage_count":         usageCount, // เพิ่มจำนวนการใช้งาน
 		}
 
+		// ตั้งค่าวันที่ถ้ามีค่า
 		if startDate.Valid {
 			discount["start_date"] = startDate.String
 		}
@@ -118,6 +125,7 @@ func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 		count++
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing discount codes", http.StatusInternalServerError)
@@ -126,16 +134,18 @@ func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Total discount codes found: %d\n", count)
 
+	// ส่ง response กลับ
 	utils.JSONResponse(w, map[string]interface{}{
 		"discounts": discounts,
 		"total":     count,
 	}, http.StatusOK)
 }
 
-// GET /admin/discounts/{id} - ดึงโดย ID
+// GET /admin/discounts/{id} - ดึงส่วนลดโดย ID
 func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 	fmt.Printf("🔍 Fetching discount code: ID=%d\n", id)
 
+	// ตัวแปรสำหรับเก็บข้อมูลส่วนลด
 	var code, discountType string
 	var value, minTotal float64
 	var startDate, endDate, createdAt sql.NullString
@@ -143,6 +153,7 @@ func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 	var singleUsePerUser, active bool
 	var usageCount int
 
+	// ดึงข้อมูลส่วนลดจากฐานข้อมูล
 	err := db.QueryRow(`
 		SELECT 
 			dc.code, dc.type, dc.value, dc.min_total, 
@@ -165,6 +176,7 @@ func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
+	// สร้าง object ส่วนลด
 	discount := map[string]interface{}{
 		"id":                  id,
 		"code":                code,
@@ -178,6 +190,7 @@ func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 		"usage_count":         usageCount, // เพิ่มจำนวนการใช้งาน
 	}
 
+	// ตั้งค่าวันที่ถ้ามีค่า
 	if startDate.Valid {
 		discount["start_date"] = startDate.String
 	}
@@ -189,28 +202,30 @@ func getDiscountByID(w http.ResponseWriter, r *http.Request, id int) {
 	utils.JSONResponse(w, discount, http.StatusOK)
 }
 
-// POST /admin/discounts - สร้างใหม่
+// POST /admin/discounts - สร้างส่วนลดใหม่
 func createDiscount(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("➕ Creating new discount code")
 
+	// โครงสร้างสำหรับเก็บข้อมูลจาก request
 	var req struct {
-		Code             string  `json:"code"`
-		Type             string  `json:"type"`
-		Value            float64 `json:"value"`
-		MinTotal         float64 `json:"min_total"`
-		StartDate        *string `json:"start_date"`
-		EndDate          *string `json:"end_date"`
-		UsageLimit       *int    `json:"usage_limit"`
-		SingleUsePerUser bool    `json:"single_use_per_user"`
-		Active           bool    `json:"active"`
+		Code             string  `json:"code"`                // รหัสส่วนลด
+		Type             string  `json:"type"`                // ประเภท (percent/fixed)
+		Value            float64 `json:"value"`               // ค่าส่วนลด
+		MinTotal         float64 `json:"min_total"`           // ยอดซื้อขั้นต่ำ
+		StartDate        *string `json:"start_date"`          // วันที่เริ่มใช้งาน
+		EndDate          *string `json:"end_date"`            // วันที่สิ้นสุด
+		UsageLimit       *int    `json:"usage_limit"`         // จำนวนครั้งที่ใช้ได้
+		SingleUsePerUser bool    `json:"single_use_per_user"` // ใช้ได้คนละครั้งเดียว
+		Active           bool    `json:"active"`              // สถานะใช้งาน
 	}
 
+	// แปลง JSON request body เป็น struct
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Validation
+	// Validation ข้อมูล
 	if req.Code == "" {
 		utils.JSONError(w, "Discount code is required", http.StatusBadRequest)
 		return
@@ -224,7 +239,7 @@ func createDiscount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse dates
+	// Parse dates จาก string เป็น time.Time
 	var startDate, endDate interface{}
 	if req.StartDate != nil && *req.StartDate != "" {
 		if date, err := time.Parse("2006-01-02", *req.StartDate); err == nil {
@@ -270,16 +285,18 @@ func createDiscount(w http.ResponseWriter, r *http.Request) {
 	id, _ := result.LastInsertId()
 	fmt.Printf("✅ Discount code created: ID=%d, Code=%s\n", id, req.Code)
 
+	// ส่ง response สำเร็จกลับ
 	utils.JSONResponse(w, map[string]interface{}{
 		"message": "Discount code created successfully",
 		"id":      id,
 	}, http.StatusCreated)
 }
 
-// PUT /admin/discounts/{id} - อัพเดต + รีเซ็ตการใช้งานเมื่อเปิดใช้งานใหม่
+// PUT /admin/discounts/{id} - อัพเดทส่วนลด + รีเซ็ตการใช้งานเมื่อเปิดใช้งานใหม่
 func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 	fmt.Printf("✏️ Updating discount code with reset: ID=%d\n", id)
 
+	// โครงสร้างสำหรับเก็บข้อมูลจาก request
 	var req struct {
 		Code             string  `json:"code"`
 		Type             string  `json:"type"`
@@ -292,12 +309,13 @@ func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 		Active           bool    `json:"active"`
 	}
 
+	// แปลง JSON request body เป็น struct
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	// Validation
+	// Validation ข้อมูล
 	if req.Code == "" {
 		utils.JSONError(w, "Discount code is required", http.StatusBadRequest)
 		return
@@ -311,7 +329,7 @@ func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
-	// เริ่ม transaction
+	// เริ่ม transaction เพื่อความปลอดภัยของข้อมูล
 	tx, err := db.Begin()
 	if err != nil {
 		utils.JSONError(w, "Error starting transaction", http.StatusInternalServerError)
@@ -344,7 +362,7 @@ func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 		fmt.Printf("✅ Reset usage history for discount ID: %d (reactivated)\n", id)
 	}
 
-	// Parse dates
+	// Parse dates จาก string เป็น time.Time
 	var startDate, endDate interface{}
 	if req.StartDate != nil && *req.StartDate != "" {
 		if date, err := time.Parse("2006-01-02", *req.StartDate); err == nil {
@@ -394,6 +412,7 @@ func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
+	// ตรวจสอบว่ามีแถวถูกอัพเดทจริงหรือไม่
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		tx.Rollback()
@@ -401,6 +420,7 @@ func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
+	// ยืนยัน transaction
 	if err := tx.Commit(); err != nil {
 		utils.JSONError(w, "Error completing update", http.StatusInternalServerError)
 		return
@@ -408,6 +428,7 @@ func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 
 	fmt.Printf("✅ Discount code updated: ID=%d, Code=%s, Active=%t\n", id, req.Code, req.Active)
 
+	// ส่ง response สำเร็จกลับ
 	utils.JSONResponse(w, map[string]interface{}{
 		"message":     "Discount code updated successfully",
 		"id":          id,
@@ -416,11 +437,11 @@ func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 	}, http.StatusOK)
 }
 
-// DELETE /admin/discounts/{id} - ลบ + ลบประวัติการใช้งาน
+// DELETE /admin/discounts/{id} - ลบส่วนลด + ลบประวัติการใช้งาน
 func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 	fmt.Printf("🗑️ Deleting discount code with cleanup: ID=%d\n", id)
 
-	// เริ่ม transaction
+	// เริ่ม transaction เพื่อความปลอดภัยของข้อมูล
 	tx, err := db.Begin()
 	if err != nil {
 		utils.JSONError(w, "Error starting transaction", http.StatusInternalServerError)
@@ -446,6 +467,7 @@ func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
+	// ตรวจสอบว่ามีแถวถูกลบจริงหรือไม่
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		tx.Rollback()
@@ -453,6 +475,7 @@ func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
+	// ยืนยัน transaction
 	if err := tx.Commit(); err != nil {
 		utils.JSONError(w, "Error completing deletion", http.StatusInternalServerError)
 		return
@@ -460,6 +483,7 @@ func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 
 	fmt.Printf("✅ Discount code deleted: ID=%d\n", id)
 
+	// ส่ง response สำเร็จกลับ
 	utils.JSONResponse(w, map[string]interface{}{
 		"message":      "Discount code deleted successfully",
 		"id":           id,
@@ -467,10 +491,11 @@ func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 	}, http.StatusOK)
 }
 
-// ฟังก์ชันสำหรับตรวจสอบและปิดใช้งานส่วนลดที่ครบจำนวน
+// ฟังก์ชันสำหรับตรวจสอบและปิดใช้งานส่วนลดที่ครบจำนวนอัตโนมัติ
 func autoDeactivateDiscounts() {
 	fmt.Println("🔄 Checking for discount codes to deactivate...")
 
+	// ค้นหาส่วนลดที่ใช้งานครบจำนวนแล้ว
 	rows, err := db.Query(`
         SELECT dc.id, dc.usage_limit, COUNT(udc.id) as usage_count
         FROM discount_codes dc
@@ -486,6 +511,7 @@ func autoDeactivateDiscounts() {
 	defer rows.Close()
 
 	var deactivatedCount int
+	// อ่านข้อมูลส่วนลดที่ต้องปิดใช้งาน
 	for rows.Next() {
 		var discountID int
 		var usageLimit, usageCount int

@@ -19,6 +19,7 @@ func main() {
 	// Connect Database
 	// --------------------------
 	var err error
+	// ข้อมูลการเชื่อมต่อฐานข้อมูล MySQL
 	dsn := "65011212151:TxEy2003122@tcp(202.28.34.210:3309)/db65011212151"
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
@@ -26,6 +27,7 @@ func main() {
 	}
 	defer db.Close()
 
+	// ทดสอบการเชื่อมต่อฐานข้อมูล
 	if err = db.Ping(); err != nil {
 		log.Fatal("Cannot ping database:", err)
 	}
@@ -35,24 +37,27 @@ func main() {
 	handlers.InitDB(db)
 
 	// Create uploads folder if not exists
+	// สร้างโฟลเดอร์ uploads หากยังไม่มี (สำหรับเก็บไฟล์ภาพ)
 	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
 		os.Mkdir("uploads", 0755)
 	}
 
 	// --------------------------
 	// Public Routes
+	// เส้นทางที่ไม่ต้องยืนยันตัวตน
 	// --------------------------
-	http.HandleFunc("/", handlers.RootHandler)
-	http.HandleFunc("/register", handlers.RegisterHandler)
-	http.HandleFunc("/login", handlers.LoginHandler)
-	http.HandleFunc("/games", handlers.GamesHandler)
-	http.HandleFunc("/games/", handlers.GameByIDHandler)
-	http.HandleFunc("/categories", handlers.CategoriesHandler)
-	http.HandleFunc("/search", handlers.SearchHandler)
-	http.HandleFunc("/ranking", handlers.RankingHandler)
+	http.HandleFunc("/", handlers.RootHandler)                 // หน้าแรก
+	http.HandleFunc("/register", handlers.RegisterHandler)     // ลงทะเบียน
+	http.HandleFunc("/login", handlers.LoginHandler)           // เข้าสู่ระบบ
+	http.HandleFunc("/games", handlers.GamesHandler)           // รายการเกมทั้งหมด
+	http.HandleFunc("/games/", handlers.GameByIDHandler)       // ข้อมูลเกมตาม ID
+	http.HandleFunc("/categories", handlers.CategoriesHandler) // รายการหมวดหมู่
+	http.HandleFunc("/search", handlers.SearchHandler)         // ค้นหาเกม
+	http.HandleFunc("/ranking", handlers.RankingHandler)       // อันดับเกม
 
 	// --------------------------
 	// User Routes (Protected)
+	// เส้นทางที่ต้องยืนยันตัวตน (ผู้ใช้ทั่วไป)
 	// --------------------------
 	http.Handle("/profile", handlers.AuthMiddleware(http.HandlerFunc(handlers.ProfileHandler)))
 	http.Handle("/wallet", handlers.AuthMiddleware(http.HandlerFunc(handlers.WalletHandler)))
@@ -69,6 +74,7 @@ func main() {
 
 	// --------------------------
 	// Admin Routes (Protected + Admin only)
+	// เส้นทางสำหรับผู้ดูแลระบบเท่านั้น
 	// --------------------------
 	http.Handle("/admin/games", handlers.AuthMiddleware(handlers.AdminOnly(http.HandlerFunc(handlers.AdminAddGameHandler))))
 	http.Handle("/admin/games/", handlers.AuthMiddleware(handlers.AdminOnly(http.HandlerFunc(handlers.AdminUpdateGameHandler))))
@@ -83,23 +89,25 @@ func main() {
 
 	// --------------------------
 	// Serve static files
+	// ให้บริการไฟล์ static (ภาพ)
 	// --------------------------
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 
 	// --------------------------
 	// Configure CORS
+	// ตั้งค่า CORS สำหรับการเรียกข้าม domain
 	// --------------------------
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{
-			"http://localhost:4200",
+			"http://localhost:4200", // อนุญาตให้เรียกจาก Angular development server
 		},
 		AllowedMethods: []string{
-			"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH",
+			"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", // อนุญาต methods ที่ใช้
 		},
 		AllowedHeaders: []string{
 			"*", // อนุญาตทุก headers หรือระบุเฉพาะเช่น "Content-Type", "Authorization"
 		},
-		AllowCredentials: true,
+		AllowCredentials: true, // อนุญาตการส่ง credentials (cookies, authentication)
 		Debug:            true, // ตั้งเป็น false ใน production
 	})
 
@@ -108,12 +116,13 @@ func main() {
 
 	// --------------------------
 	// Start Server
+	// เริ่มต้นเซิร์ฟเวอร์
 	// --------------------------
 	ip := "192.168.56.1" // ใช้ IP แบบ fix
 	fmt.Printf("🌐 Server IP: %s\n", ip)
 	fmt.Printf("🚀 Server started at http://%s:8080\n", ip)
 	fmt.Printf("🚀 Also available at http://localhost:8080\n")
-	fmt.Println("✅ CORS enabled for: http://localhost:4200, http://localhost:3000")
+	fmt.Println("✅ CORS enabled for: http://localhost:4200")
 	fmt.Println("📚 Available endpoints:")
 	fmt.Println("   PUBLIC:")
 	fmt.Println("   GET  /                 - Home page")

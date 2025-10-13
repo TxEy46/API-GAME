@@ -10,52 +10,62 @@ import (
 )
 
 // WalletHandler handles wallet balance retrieval
+// ฟังก์ชันสำหรับดึงยอดเงินในกระเป๋าเงินของผู้ใช้
 func WalletHandler(w http.ResponseWriter, r *http.Request) {
+	// ดึง User-ID จาก header (ถูกตั้งค่าโดย middleware การยืนยันตัวตน)
 	userID := r.Header.Get("User-ID")
 
 	var balance float64
+	// ดึงยอดเงินในกระเป๋าเงินจากฐานข้อมูล
 	err := db.QueryRow("SELECT wallet_balance FROM users WHERE id = ?", userID).Scan(&balance)
 	if err != nil {
 		utils.JSONError(w, "Error fetching wallet", http.StatusInternalServerError)
 		return
 	}
 
+	// ส่ง response กลับพร้อมยอดเงิน
 	utils.JSONResponse(w, map[string]interface{}{
 		"balance": balance,
 	}, http.StatusOK)
 }
 
 // DepositHandler handles wallet deposits
+// ฟังก์ชันสำหรับฝากเงินเข้าสู่กระเป๋าเงิน
 func DepositHandler(w http.ResponseWriter, r *http.Request) {
+	// ตรวจสอบว่าเป็นเมธอด POST หรือไม่
 	if r.Method != "POST" {
 		utils.JSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// ดึง User-ID จาก header
 	userID := r.Header.Get("User-ID")
 
+	// โครงสร้างสำหรับเก็บข้อมูลจาก request
 	var req struct {
-		Amount float64 `json:"amount"`
+		Amount float64 `json:"amount"` // จำนวนเงินที่ต้องการฝาก
 	}
 
+	// แปลง JSON request body เป็น struct
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
+	// ตรวจสอบว่าจำนวนเงินเป็นบวก
 	if req.Amount <= 0 {
 		utils.JSONError(w, "Amount must be positive", http.StatusBadRequest)
 		return
 	}
 
-	// Start transaction
+	// เริ่มต้น transaction เพื่อความปลอดภัยของข้อมูล
 	tx, err := db.Begin()
 	if err != nil {
 		utils.JSONError(w, "Error starting transaction", http.StatusInternalServerError)
 		return
 	}
 
-	// Update wallet balance
+	// อัพเดทยอดเงินในกระเป๋าเงิน
 	_, err = tx.Exec("UPDATE users SET wallet_balance = wallet_balance + ? WHERE id = ?",
 		req.Amount, userID)
 	if err != nil {
@@ -64,7 +74,7 @@ func DepositHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record transaction
+	// บันทึกประวัติธุรกรรม
 	_, err = tx.Exec(`
 		INSERT INTO user_transactions (user_id, type, amount, description) 
 		VALUES (?, 'deposit', ?, ?)
@@ -75,11 +85,13 @@ func DepositHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ยืนยัน transaction
 	if err := tx.Commit(); err != nil {
 		utils.JSONError(w, "Error committing transaction", http.StatusInternalServerError)
 		return
 	}
 
+	// ส่ง response สำเร็จกลับ
 	utils.JSONResponse(w, map[string]interface{}{
 		"message": "Deposit successful",
 		"amount":  req.Amount,
@@ -87,16 +99,20 @@ func DepositHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // TransactionsHandler handles user transaction history
+// ฟังก์ชันสำหรับดึงประวัติธุรกรรมของผู้ใช้
 func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
+	// ดึง User-ID จาก header
 	userID := r.Header.Get("User-ID")
 
 	fmt.Printf("🔍 Transactions request for user ID: %s\n", userID)
 
+	// ตรวจสอบว่ามี User-ID หรือไม่
 	if userID == "" {
 		utils.JSONError(w, "User ID not found", http.StatusUnauthorized)
 		return
 	}
 
+	// แปลง User-ID เป็นตัวเลข
 	userIDInt, err := strconv.Atoi(userID)
 	if err != nil {
 		utils.JSONError(w, "Invalid user ID", http.StatusBadRequest)
@@ -121,6 +137,7 @@ func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
 
 	var transactions []map[string]interface{}
 
+	// อ่านข้อมูลธุรกรรมทีละแถว
 	for rows.Next() {
 		var txType string
 		var amount float64
@@ -134,6 +151,7 @@ func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
 
 		fmt.Printf("✅ Transaction found: Type=%s, Amount=%.2f\n", txType, amount)
 
+		// สร้าง object ธุรกรรม
 		transactions = append(transactions, map[string]interface{}{
 			"type":        txType,
 			"amount":      amount,
@@ -142,6 +160,7 @@ func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// ตรวจสอบว่า transactions ไม่เป็น nil
 	if transactions == nil {
 		transactions = []map[string]interface{}{}
 	}
@@ -151,16 +170,20 @@ func TransactionsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // PurchaseHistoryHandler handles user purchase history
+// ฟังก์ชันสำหรับดึงประวัติการซื้อของผู้ใช้
 func PurchaseHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	// ดึง User-ID จาก header
 	userID := r.Header.Get("User-ID")
 
 	fmt.Printf("🔍 Purchase history request for user ID: %s\n", userID)
 
+	// ตรวจสอบว่ามี User-ID หรือไม่
 	if userID == "" {
 		utils.JSONError(w, "User ID not found", http.StatusUnauthorized)
 		return
 	}
 
+	// แปลง User-ID เป็นตัวเลข
 	userIDInt, err := strconv.Atoi(userID)
 	if err != nil {
 		utils.JSONError(w, "Invalid user ID", http.StatusBadRequest)
@@ -190,6 +213,7 @@ func PurchaseHistoryHandler(w http.ResponseWriter, r *http.Request) {
 	var purchases []map[string]interface{}
 	count := 0
 
+	// อ่านข้อมูลการซื้อทีละแถว
 	for rows.Next() {
 		var id int
 		var totalAmount, finalAmount float64
@@ -201,14 +225,16 @@ func PurchaseHistoryHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// สร้าง object การซื้อ
 		purchase := map[string]interface{}{
 			"id":             id,
 			"total_amount":   totalAmount,
 			"final_amount":   finalAmount,
 			"purchase_date":  purchaseDate,
-			"discount_saved": totalAmount - finalAmount,
+			"discount_saved": totalAmount - finalAmount, // คำนวณส่วนลดที่ได้รับ
 		}
 
+		// จัดการรหัสส่วนลด (อาจเป็น NULL)
 		if discountCode.Valid {
 			purchase["discount_code"] = discountCode.String
 		} else {
@@ -220,6 +246,7 @@ func PurchaseHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("✅ Purchase found: ID=%d, Total=%.2f, Final=%.2f\n", id, totalAmount, finalAmount)
 	}
 
+	// ตรวจสอบข้อผิดพลาดระหว่างการอ่านข้อมูล
 	if err = rows.Err(); err != nil {
 		fmt.Printf("❌ Error during purchase history rows iteration: %v\n", err)
 		utils.JSONError(w, "Error processing purchase history", http.StatusInternalServerError)
@@ -228,7 +255,7 @@ func PurchaseHistoryHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Total purchases found: %d\n", count)
 
-	// Always return an array, even if empty
+	// ตรวจสอบว่า purchases ไม่เป็น nil
 	if purchases == nil {
 		purchases = []map[string]interface{}{}
 	}
@@ -237,12 +264,13 @@ func PurchaseHistoryHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // TransactionStatsHandler handles transaction statistics
+// ฟังก์ชันสำหรับดึงสถิติธุรกรรม (สำหรับ admin)
 func TransactionStatsHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("📊 Fetching transaction statistics")
 
 	stats := make(map[string]interface{})
 
-	// ยอดรวมทั้งหมด
+	// ยอดรวมทั้งหมด (ฝากและซื้อ)
 	var totalDeposit, totalPurchase float64
 	err := db.QueryRow("SELECT COALESCE(SUM(amount), 0) FROM user_transactions WHERE type = 'deposit'").Scan(&totalDeposit)
 	if err != nil {
@@ -301,6 +329,7 @@ func TransactionStatsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// รวมสถิติทั้งหมด
 	stats["total_deposit"] = totalDeposit
 	stats["total_purchase"] = totalPurchase
 	stats["deposit_count"] = depositCount
@@ -311,6 +340,7 @@ func TransactionStatsHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("✅ Transaction statistics loaded\n")
 
+	// ส่ง response กลับพร้อมสถิติ
 	utils.JSONResponse(w, map[string]interface{}{
 		"stats":   stats,
 		"success": true,
