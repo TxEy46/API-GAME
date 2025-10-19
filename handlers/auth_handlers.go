@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"go-api-game/auth"
+	"go-api-game/config"
 	"go-api-game/utils"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +19,84 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// saveAvatar handles avatar upload to Cloudinary with fallback to local storage
+func saveAvatar(file io.Reader, header *multipart.FileHeader, userID int) (string, error) {
+	// Read file bytes
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		return "", fmt.Errorf("error reading avatar file: %v", err)
+	}
+
+	// Generate unique filename with user ID
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext == "" {
+		ext = ".dat"
+	}
+	filename := fmt.Sprintf("avatar_%d_%d%s", userID, time.Now().UnixNano(), ext)
+
+	// Try Cloudinary first
+	if config.Cld != nil {
+		imageURL, err := config.UploadImageFromBytes(fileBytes, filename)
+		if err != nil {
+			fmt.Printf("❌ Cloudinary upload failed, using local storage: %v\n", err)
+			// Fallback to local storage
+			return saveAvatarToLocalStorage(fileBytes, filename)
+		}
+		fmt.Printf("✅ Avatar uploaded to Cloudinary: %s\n", imageURL)
+		return imageURL, nil
+	}
+
+	// Use local storage if Cloudinary not configured
+	return saveAvatarToLocalStorage(fileBytes, filename)
+}
+
+// saveAvatarToLocalStorage saves avatar to local file system
+func saveAvatarToLocalStorage(fileBytes []byte, filename string) (string, error) {
+	// Create uploads directory if not exists
+	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
+		os.Mkdir("uploads", 0755)
+	}
+
+	filePath := filepath.Join("uploads", filename)
+
+	err := os.WriteFile(filePath, fileBytes, 0644)
+	if err != nil {
+		return "", fmt.Errorf("error saving avatar locally: %v", err)
+	}
+
+	localURL := "/uploads/" + filename
+	fmt.Printf("✅ Avatar saved locally: %s\n", localURL)
+	return localURL, nil
+}
+
+// deleteAvatar handles avatar deletion from both Cloudinary and local storage
+func deleteAvatar(avatarURL string) error {
+	if avatarURL == "" {
+		return nil
+	}
+
+	// Check if it's a Cloudinary URL
+	if strings.Contains(avatarURL, "cloudinary.com") {
+		// Delete from Cloudinary
+		err := config.DeleteImage(avatarURL)
+		if err != nil {
+			return fmt.Errorf("error deleting Cloudinary avatar: %v", err)
+		}
+		fmt.Printf("🗑️ Deleted Cloudinary avatar: %s\n", avatarURL)
+	} else {
+		// Delete from local storage
+		filePath := strings.TrimPrefix(avatarURL, "/")
+		if _, err := os.Stat(filePath); err == nil {
+			err := os.Remove(filePath)
+			if err != nil {
+				return fmt.Errorf("error deleting local avatar: %v", err)
+			}
+			fmt.Printf("🗑️ Deleted local avatar: %s\n", filePath)
+		}
+	}
+	return nil
+}
 
 // RegisterHandler handles user registration
 // ฟังก์ชันสำหรับการลงทะเบียนผู้ใช้ใหม่
@@ -61,34 +141,13 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			defer file.Close()
 
-			// ✅ ลบการตรวจสอบประเภทไฟล์ออก - อนุญาตทุกไฟล์
-			// ไม่มีการตรวจสอบนามสกุลไฟล์อีกต่อไป
-
-			// สร้างชื่อไฟล์ที่ไม่ซ้ำกัน
-			ext := strings.ToLower(filepath.Ext(header.Filename))
-			if ext == "" {
-				// ถ้าไฟล์ไม่มีนามสกุล ให้ใช้ .dat เป็น default
-				ext = ".dat"
-			}
-			filename := fmt.Sprintf("avatar_%d%s", time.Now().UnixNano(), ext)
-			filePath := filepath.Join("uploads", filename)
-
-			// บันทึกไฟล์
-			dst, err := os.Create(filePath)
+			// ใช้ฟังก์ชันใหม่สำหรับอัพโหลด avatar (userID จะถูกกำหนดภายหลัง)
+			// ใช้ 0 เป็น temporary userID
+			avatarURL, err = saveAvatar(file, header, 0)
 			if err != nil {
-				utils.JSONError(w, "Error saving avatar", http.StatusInternalServerError)
+				utils.JSONError(w, "Error uploading avatar: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			defer dst.Close()
-
-			// คัดลอกข้อมูลไฟล์
-			if _, err := io.Copy(dst, file); err != nil {
-				utils.JSONError(w, "Error copying avatar", http.StatusInternalServerError)
-				return
-			}
-
-			avatarURL = "/uploads/" + filename
-			fmt.Printf("✅ Avatar uploaded: %s\n", avatarURL)
 		} else {
 			// ไม่มีไฟล์ avatar ส่งมา → ใช้ default avatar
 			avatarURL = "/uploads/default-avatar.png"
@@ -111,7 +170,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fmt.Printf("🔍 Raw request body: %s\n", string(body))
-		// สร้าง新的 reader สำหรับ JSON decoder
+		// สร้าง new reader สำหรับ JSON decoder
 		r.Body = io.NopCloser(bytes.NewBuffer(body))
 
 		// แปลง JSON เป็น struct
@@ -132,18 +191,30 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ตรวจสอบความถูกต้องของข้อมูลที่จำเป็น
 	if req.Username == "" || req.Email == "" || req.Password == "" {
+		// ลบไฟล์ avatar ที่อัพโหลดไว้ถ้าข้อมูลไม่ครบ
+		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
+			deleteAvatar(avatarURL)
+		}
 		utils.JSONError(w, "Username, email and password are required", http.StatusBadRequest)
 		return
 	}
 
 	// ตรวจสอบรูปแบบอีเมล
 	if !isValidEmail(req.Email) {
+		// ลบไฟล์ avatar ที่อัพโหลดไว้ถ้าอีเมลไม่ถูกต้อง
+		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
+			deleteAvatar(avatarURL)
+		}
 		utils.JSONError(w, "Invalid email format", http.StatusBadRequest)
 		return
 	}
 
 	// ตรวจสอบความแข็งแรงของรหัสผ่าน
 	if len(req.Password) < 6 {
+		// ลบไฟล์ avatar ที่อัพโหลดไว้ถ้ารหัสผ่านสั้นเกินไป
+		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
+			deleteAvatar(avatarURL)
+		}
 		utils.JSONError(w, "Password must be at least 6 characters", http.StatusBadRequest)
 		return
 	}
@@ -157,6 +228,10 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
     `, req.Username, req.Email).Scan(&count)
 
 	if err != nil {
+		// ลบไฟล์ avatar ที่อัพโหลดไว้ถ้ามีข้อผิดพลาด
+		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
+			deleteAvatar(avatarURL)
+		}
 		utils.JSONError(w, "Error checking user existence", http.StatusInternalServerError)
 		return
 	}
@@ -171,6 +246,11 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
             LIMIT 1
         `, req.Username, req.Email).Scan(&existingUsername, &existingEmail)
 
+		// ลบไฟล์ avatar ที่อัพโหลดไว้ถ้าชื่อผู้ใช้หรืออีเมลซ้ำ
+		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
+			deleteAvatar(avatarURL)
+		}
+
 		if existingUsername == req.Username {
 			utils.JSONError(w, "Username already exists", http.StatusBadRequest)
 			return
@@ -184,6 +264,10 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	// Hash รหัสผ่าน
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
+		// ลบไฟล์ avatar ที่อัพโหลดไว้ถ้า hash รหัสผ่านล้มเหลว
+		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
+			deleteAvatar(avatarURL)
+		}
 		utils.JSONError(w, "Error processing password", http.StatusInternalServerError)
 		return
 	}
@@ -197,7 +281,7 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// ลบไฟล์ที่อัพโหลดไว้ถ้าเพิ่มข้อมูลในฐานข้อมูลล้มเหลว (เฉพาะไฟล์ที่อัปโหลดใหม่)
 		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
-			os.Remove(strings.TrimPrefix(avatarURL, "/"))
+			deleteAvatar(avatarURL)
 		}
 		utils.JSONError(w, "Error creating user: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -206,12 +290,31 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	// ดึง ID ของผู้ใช้ที่เพิ่งเพิ่ม
 	userID, _ := result.LastInsertId()
 
+	// ถ้า avatar ถูกอัพโหลดและ userID ถูกกำหนดแล้ว ให้อัพเดทชื่อไฟล์
+	if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" && strings.Contains(avatarURL, "avatar_0_") {
+		// สร้างชื่อไฟล์ใหม่ด้วย userID ที่ถูกต้อง
+		newFilename := fmt.Sprintf("avatar_%d_%s", userID, strings.Split(filepath.Base(avatarURL), "_")[2])
+		newAvatarURL := "/uploads/" + newFilename
+
+		// ถ้าเป็นไฟล์ local ให้เปลี่ยนชื่อไฟล์
+		if !strings.Contains(avatarURL, "cloudinary.com") {
+			oldPath := strings.TrimPrefix(avatarURL, "/")
+			newPath := filepath.Join("uploads", newFilename)
+			if err := os.Rename(oldPath, newPath); err == nil {
+				// อัพเดท avatar_url ในฐานข้อมูล
+				db.Exec("UPDATE users SET avatar_url = ? WHERE id = ?", newAvatarURL, userID)
+				avatarURL = newAvatarURL
+				fmt.Printf("✅ Renamed avatar file to: %s\n", newAvatarURL)
+			}
+		}
+	}
+
 	// สร้างตะกร้าสินค้าสำหรับผู้ใช้
 	_, err = db.Exec("INSERT INTO carts (user_id) VALUES (?)", userID)
 	if err != nil {
 		// ลบไฟล์ที่อัพโหลดไว้ถ้าสร้างตะกร้าล้มเหลว (เฉพาะไฟล์ที่อัปโหลดใหม่)
 		if avatarURL != "" && avatarURL != "/uploads/default-avatar.png" {
-			os.Remove(strings.TrimPrefix(avatarURL, "/"))
+			deleteAvatar(avatarURL)
 		}
 		utils.JSONError(w, "Error creating cart", http.StatusInternalServerError)
 		return
@@ -263,15 +366,15 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ตัวแปรสำหรับเก็บข้อมูลผู้ใช้จากฐานข้อมูล
 	var userID int
-	var username, email, passwordHash, role string
+	var username, email, passwordHash, role, avatarURL string
 
 	// ค้นหาผู้ใช้ด้วยชื่อผู้ใช้หรืออีเมล
 	err := db.QueryRow(`
-		SELECT id, username, email, password_hash, role 
+		SELECT id, username, email, password_hash, role, COALESCE(avatar_url, '') 
 		FROM users 
 		WHERE username = ? OR email = ?
 	`, req.Identifier, req.Identifier).Scan(
-		&userID, &username, &email, &passwordHash, &role,
+		&userID, &username, &email, &passwordHash, &role, &avatarURL,
 	)
 
 	if err != nil {
@@ -308,12 +411,13 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ส่ง response การเข้าสู่ระบบสำเร็จ
 	utils.JSONResponse(w, map[string]interface{}{
-		"message":  "Login successful",
-		"user_id":  userID,
-		"username": username,
-		"email":    email,
-		"role":     role,
-		"token":    token,
+		"message":    "Login successful",
+		"user_id":    userID,
+		"username":   username,
+		"email":      email,
+		"role":       role,
+		"avatar_url": avatarURL,
+		"token":      token,
 	}, http.StatusOK)
 }
 
@@ -425,6 +529,10 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var avatarURL string
 
+	// ดึง avatar URL เดิมก่อนทำการอัพเดท
+	var oldAvatarURL sql.NullString
+	db.QueryRow("SELECT avatar_url FROM users WHERE id = ?", userIDInt).Scan(&oldAvatarURL)
+
 	// กรณีส่งข้อมูลแบบ Form-data (มีการอัพโหลดไฟล์ avatar)
 	if strings.Contains(contentType, "multipart/form-data") {
 		err = r.ParseMultipartForm(10 << 20) // 10 MB limit
@@ -445,33 +553,12 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			defer file.Close()
 
-			// ✅ ลบการตรวจสอบประเภทไฟล์ออก - อนุญาตทุกไฟล์
-			// ไม่มีการตรวจสอบนามสกุลไฟล์อีกต่อไป
-
-			// สร้างชื่อไฟล์ที่ไม่ซ้ำกัน (รวม userID เพื่อให้เกี่ยวข้องกับผู้ใช้)
-			ext := strings.ToLower(filepath.Ext(header.Filename))
-			if ext == "" {
-				// ถ้าไฟล์ไม่มีนามสกุล ให้ใช้ .dat เป็น default
-				ext = ".dat"
-			}
-			filename := fmt.Sprintf("avatar_%d_%d%s", userIDInt, time.Now().UnixNano(), ext)
-			filePath := filepath.Join("uploads", filename)
-
-			// บันทึกไฟล์
-			dst, err := os.Create(filePath)
+			// ใช้ฟังก์ชันใหม่สำหรับอัพโหลด avatar
+			avatarURL, err = saveAvatar(file, header, userIDInt)
 			if err != nil {
-				utils.JSONError(w, "Error saving avatar", http.StatusInternalServerError)
+				utils.JSONError(w, "Error uploading avatar: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			defer dst.Close()
-
-			if _, err := io.Copy(dst, file); err != nil {
-				utils.JSONError(w, "Error copying avatar", http.StatusInternalServerError)
-				return
-			}
-
-			avatarURL = "/uploads/" + filename
-			fmt.Printf("✅ Avatar uploaded: %s\n", avatarURL)
 		}
 	} else {
 		// กรณีส่งข้อมูลแบบ JSON (ไม่มีไฟล์ avatar)
@@ -483,12 +570,20 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Validate input - ตรวจสอบว่ามี field ใดๆ ที่จะอัพเดตหรือไม่
 	if req.Username == "" && req.Email == "" && avatarURL == "" && req.NewPassword == "" {
+		// ลบไฟล์ avatar ใหม่ถ้าไม่มี field ใดๆ ที่จะอัพเดท
+		if avatarURL != "" {
+			deleteAvatar(avatarURL)
+		}
 		utils.JSONError(w, "No fields to update", http.StatusBadRequest)
 		return
 	}
 
 	// ตรวจสอบรูปแบบอีเมลถ้ามีการส่งมา
 	if req.Email != "" && !isValidEmail(req.Email) {
+		// ลบไฟล์ avatar ใหม่ถ้าอีเมลไม่ถูกต้อง
+		if avatarURL != "" {
+			deleteAvatar(avatarURL)
+		}
 		utils.JSONError(w, "Invalid email format", http.StatusBadRequest)
 		return
 	}
@@ -496,26 +591,46 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	// ตรวจสอบการเปลี่ยนรหัสผ่านถ้ามีการส่งรหัสผ่านใหม่มา
 	if req.NewPassword != "" {
 		if req.CurrentPassword == "" {
+			// ลบไฟล์ avatar ใหม่ถ้าข้อมูลรหัสผ่านไม่ครบ
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, "Current password is required to change password", http.StatusBadRequest)
 			return
 		}
 
 		if req.ConfirmPassword == "" {
+			// ลบไฟล์ avatar ใหม่ถ้าข้อมูลรหัสผ่านไม่ครบ
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, "Confirm password is required", http.StatusBadRequest)
 			return
 		}
 
 		if req.NewPassword != req.ConfirmPassword {
+			// ลบไฟล์ avatar ใหม่ถ้ารหัสผ่านไม่ตรงกัน
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, "New password and confirm password do not match", http.StatusBadRequest)
 			return
 		}
 
 		if len(req.NewPassword) < 6 {
+			// ลบไฟล์ avatar ใหม่ถ้ารหัสผ่านสั้นเกินไป
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, "New password must be at least 6 characters", http.StatusBadRequest)
 			return
 		}
 
 		if req.CurrentPassword == req.NewPassword {
+			// ลบไฟล์ avatar ใหม่ถ้ารหัสผ่านใหม่เหมือนรหัสผ่านเก่า
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, "New password must be different from current password", http.StatusBadRequest)
 			return
 		}
@@ -536,9 +651,17 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 		err := db.QueryRow(checkQuery, req.Username, userIDInt, req.Email, userIDInt, req.Username, req.Email, userIDInt).Scan(&existingUser)
 
 		if err == nil && existingUser != "" {
+			// ลบไฟล์ avatar ใหม่ถ้าชื่อผู้ใช้หรืออีเมลซ้ำ
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, fmt.Sprintf("%s already exists", existingUser), http.StatusBadRequest)
 			return
 		} else if err != nil && err != sql.ErrNoRows {
+			// ลบไฟล์ avatar ใหม่ถ้ามีข้อผิดพลาด
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, "Error checking user existence", http.StatusInternalServerError)
 			return
 		}
@@ -552,8 +675,16 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 		err = db.QueryRow("SELECT password_hash FROM users WHERE id = ?", userIDInt).Scan(&currentPasswordHash)
 		if err != nil {
 			if err == sql.ErrNoRows {
+				// ลบไฟล์ avatar ใหม่ถ้าผู้ใช้ไม่พบ
+				if avatarURL != "" {
+					deleteAvatar(avatarURL)
+				}
 				utils.JSONError(w, "User not found", http.StatusNotFound)
 			} else {
+				// ลบไฟล์ avatar ใหม่ถ้ามีข้อผิดพลาด
+				if avatarURL != "" {
+					deleteAvatar(avatarURL)
+				}
 				utils.JSONError(w, "Error fetching user data", http.StatusInternalServerError)
 			}
 			return
@@ -563,6 +694,10 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 		err = bcrypt.CompareHashAndPassword([]byte(currentPasswordHash), []byte(req.CurrentPassword))
 		if err != nil {
 			fmt.Printf("❌ Current password mismatch for user ID: %d\n", userIDInt)
+			// ลบไฟล์ avatar ใหม่ถ้ารหัสผ่านปัจจุบันไม่ถูกต้อง
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, "Current password is incorrect", http.StatusUnauthorized)
 			return
 		}
@@ -570,6 +705,10 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 		// Hash รหัสผ่านใหม่
 		hashedBytes, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 		if err != nil {
+			// ลบไฟล์ avatar ใหม่ถ้า hash รหัสผ่านล้มเหลว
+			if avatarURL != "" {
+				deleteAvatar(avatarURL)
+			}
 			utils.JSONError(w, "Error processing new password", http.StatusInternalServerError)
 			return
 		}
@@ -603,6 +742,10 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ตรวจสอบว่ามีฟิลด์ที่จะอัพเดทหรือไม่
 	if len(updateFields) == 0 {
+		// ลบไฟล์ avatar ใหม่ถ้าไม่มี field ที่จะอัพเดท
+		if avatarURL != "" {
+			deleteAvatar(avatarURL)
+		}
 		utils.JSONError(w, "No fields to update", http.StatusBadRequest)
 		return
 	}
@@ -617,7 +760,7 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("❌ Error updating profile: %v\n", err)
 		// ลบไฟล์ที่อัพโหลดไว้ถ้าอัพเดทฐานข้อมูลล้มเหลว
 		if avatarURL != "" {
-			os.Remove(strings.TrimPrefix(avatarURL, "/"))
+			deleteAvatar(avatarURL)
 		}
 		utils.JSONError(w, "Error updating profile: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -628,10 +771,20 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	if rowsAffected == 0 {
 		// ลบไฟล์ที่อัพโหลดไว้ถ้าไม่มีแถวถูกอัพเดท
 		if avatarURL != "" {
-			os.Remove(strings.TrimPrefix(avatarURL, "/"))
+			deleteAvatar(avatarURL)
 		}
 		utils.JSONError(w, "User not found or no changes made", http.StatusNotFound)
 		return
+	}
+
+	// ลบไฟล์ avatar เก่าถ้ามีการอัพโหลด avatar ใหม่
+	if avatarURL != "" && oldAvatarURL.Valid && oldAvatarURL.String != "" && oldAvatarURL.String != "/uploads/default-avatar.png" {
+		err := deleteAvatar(oldAvatarURL.String)
+		if err != nil {
+			fmt.Printf("⚠️ Error deleting old avatar: %v\n", err)
+		} else {
+			fmt.Printf("🗑️ Deleted old avatar: %s\n", oldAvatarURL.String)
+		}
 	}
 
 	fmt.Printf("✅ Profile updated successfully for user ID: %d\n", userIDInt)

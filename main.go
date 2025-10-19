@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 
+	"go-api-game/config"
+
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/rs/cors"
 )
@@ -41,6 +43,11 @@ func main() {
 	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
 		os.Mkdir("uploads", 0755)
 	}
+
+	// --------------------------
+	// Initialize Cloudinary
+	// --------------------------
+	config.InitCloudinary()
 
 	// --------------------------
 	// Public Routes

@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"go-api-game/config"
 	"go-api-game/utils"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +15,90 @@ import (
 	"strings"
 	"time"
 )
+
+// saveImage handles image upload to Cloudinary with fallback to local storage
+func saveImage(file io.Reader, header *multipart.FileHeader) (string, error) {
+	// Read file bytes
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		return "", fmt.Errorf("error reading image file: %v", err)
+	}
+
+	// Check file type
+	allowedTypes := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
+		".webp": true, ".avif": true,
+	}
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if !allowedTypes[ext] {
+		return "", fmt.Errorf("invalid file type. Allowed: jpg, jpeg, png, gif, webp, avif")
+	}
+
+	// Generate unique filename
+	filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
+
+	// Try Cloudinary first
+	if config.Cld != nil {
+		imageURL, err := config.UploadImageFromBytes(fileBytes, filename)
+		if err != nil {
+			fmt.Printf("❌ Cloudinary upload failed, using local storage: %v\n", err)
+			// Fallback to local storage
+			return saveToLocalStorage(fileBytes, filename)
+		}
+		fmt.Printf("✅ Image uploaded to Cloudinary: %s\n", imageURL)
+		return imageURL, nil
+	}
+
+	// Use local storage if Cloudinary not configured
+	return saveToLocalStorage(fileBytes, filename)
+}
+
+// saveToLocalStorage saves image to local file system
+func saveToLocalStorage(fileBytes []byte, filename string) (string, error) {
+	// Create uploads directory if not exists
+	if _, err := os.Stat("uploads"); os.IsNotExist(err) {
+		os.Mkdir("uploads", 0755)
+	}
+
+	filePath := filepath.Join("uploads", filename)
+
+	err := os.WriteFile(filePath, fileBytes, 0644)
+	if err != nil {
+		return "", fmt.Errorf("error saving image locally: %v", err)
+	}
+
+	localURL := "/uploads/" + filename
+	fmt.Printf("✅ Image saved locally: %s\n", localURL)
+	return localURL, nil
+}
+
+// deleteImage handles image deletion from both Cloudinary and local storage
+func deleteImage(imageURL string) error {
+	if imageURL == "" {
+		return nil
+	}
+
+	// Check if it's a Cloudinary URL
+	if strings.Contains(imageURL, "cloudinary.com") {
+		// Delete from Cloudinary
+		err := config.DeleteImage(imageURL)
+		if err != nil {
+			return fmt.Errorf("error deleting Cloudinary image: %v", err)
+		}
+		fmt.Printf("🗑️ Deleted Cloudinary image: %s\n", imageURL)
+	} else {
+		// Delete from local storage
+		filePath := strings.TrimPrefix(imageURL, "/")
+		if _, err := os.Stat(filePath); err == nil {
+			err := os.Remove(filePath)
+			if err != nil {
+				return fmt.Errorf("error deleting local image: %v", err)
+			}
+			fmt.Printf("🗑️ Deleted local image: %s\n", filePath)
+		}
+	}
+	return nil
+}
 
 // AdminAddGameHandler handles adding new games
 // ฟังก์ชันสำหรับผู้ดูแลระบบเพิ่มเกมใหม่เข้าสู่ระบบ
@@ -75,37 +161,12 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			defer file.Close()
 
-			// ตรวจสอบประเภทไฟล์ที่อนุญาต
-			allowedTypes := map[string]bool{
-				".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
-				".webp": true, ".avif": true,
-			}
-			ext := strings.ToLower(filepath.Ext(header.Filename))
-			if !allowedTypes[ext] {
-				utils.JSONError(w, "Invalid file type. Allowed: jpg, jpeg, png, gif, webp, avif", http.StatusBadRequest)
-				return
-			}
-
-			// สร้างชื่อไฟล์ที่ไม่ซ้ำกันโดยใช้ timestamp
-			filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
-			filePath := filepath.Join("uploads", filename)
-
-			// สร้างไฟล์ใหม่เพื่อบันทึกภาพ
-			dst, err := os.Create(filePath)
+			// ใช้ฟังก์ชันใหม่สำหรับอัพโหลดภาพ
+			imageURL, err = saveImage(file, header)
 			if err != nil {
-				utils.JSONError(w, "Error saving image", http.StatusInternalServerError)
+				utils.JSONError(w, "Error uploading image: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			defer dst.Close()
-
-			// คัดลอกข้อมูลภาพจาก request ไปยังไฟล์ปลายทาง
-			if _, err := io.Copy(dst, file); err != nil {
-				utils.JSONError(w, "Error copying image", http.StatusInternalServerError)
-				return
-			}
-
-			imageURL = "/uploads/" + filename
-			fmt.Printf("✅ Image uploaded: %s\n", imageURL)
 		}
 	} else {
 		// กรณีส่งข้อมูลแบบ JSON (ไม่มีไฟล์ภาพ)
@@ -170,7 +231,7 @@ func AdminAddGameHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("❌ Error adding game: %v\n", err)
 		// ลบไฟล์ที่อัพโหลดไว้ถ้าเพิ่มข้อมูลในฐานข้อมูลล้มเหลว
 		if imageURL != "" {
-			os.Remove(strings.TrimPrefix(imageURL, "/"))
+			deleteImage(imageURL)
 		}
 		utils.JSONError(w, "Error adding game: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -272,36 +333,12 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			defer file.Close()
 
-			// ตรวจสอบประเภทไฟล์
-			allowedTypes := map[string]bool{
-				".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
-				".webp": true, ".avif": true,
-			}
-			ext := strings.ToLower(filepath.Ext(header.Filename))
-			if !allowedTypes[ext] {
-				utils.JSONError(w, "Invalid file type. Allowed: jpg, jpeg, png, gif, webp, avif", http.StatusBadRequest)
-				return
-			}
-
-			// สร้างชื่อไฟล์ใหม่ที่ไม่ซ้ำกัน
-			filename := fmt.Sprintf("game_%d%s", time.Now().UnixNano(), ext)
-			filePath := filepath.Join("uploads", filename)
-
-			// บันทึกไฟล์ภาพใหม่
-			dst, err := os.Create(filePath)
+			// ใช้ฟังก์ชันใหม่สำหรับอัพโหลดภาพ
+			imageURL, err = saveImage(file, header)
 			if err != nil {
-				utils.JSONError(w, "Error saving image", http.StatusInternalServerError)
+				utils.JSONError(w, "Error uploading image: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			defer dst.Close()
-
-			if _, err := io.Copy(dst, file); err != nil {
-				utils.JSONError(w, "Error copying image", http.StatusInternalServerError)
-				return
-			}
-
-			imageURL = "/uploads/" + filename
-			fmt.Printf("✅ New image uploaded: %s\n", imageURL)
 		}
 	} else {
 		// กรณีส่งข้อมูลแบบ JSON
@@ -309,6 +346,12 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 			utils.JSONError(w, "Invalid request body", http.StatusBadRequest)
 			return
 		}
+	}
+
+	// ดึง URL ภาพเก่าเพื่อลบในภายหลัง (ถ้ามีการอัพโหลดภาพใหม่)
+	var oldImageURL sql.NullString
+	if imageURL != "" {
+		db.QueryRow("SELECT image_url FROM games WHERE id = ?", gameID).Scan(&oldImageURL)
 	}
 
 	// สร้างคำสั่งอัพเดทแบบไดนามิกตามฟิลด์ที่มีการส่งมา
@@ -347,10 +390,6 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if imageURL != "" {
-		// ดึง URL ภาพเก่าเพื่อลบในภายหลัง
-		var oldImageURL sql.NullString
-		db.QueryRow("SELECT image_url FROM games WHERE id = ?", gameID).Scan(&oldImageURL)
-
 		updateFields = append(updateFields, "image_url = ?")
 		args = append(args, imageURL)
 	}
@@ -371,7 +410,7 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("❌ Error updating game: %v\n", err)
 		// ลบไฟล์ภาพใหม่ถ้าอัพเดทฐานข้อมูลล้มเหลว
 		if imageURL != "" {
-			os.Remove(strings.TrimPrefix(imageURL, "/"))
+			deleteImage(imageURL)
 		}
 		utils.JSONError(w, "Error updating game: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -381,24 +420,19 @@ func AdminUpdateGameHandler(w http.ResponseWriter, r *http.Request) {
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		if imageURL != "" {
-			os.Remove(strings.TrimPrefix(imageURL, "/"))
+			deleteImage(imageURL)
 		}
 		utils.JSONError(w, "Game not found", http.StatusNotFound)
 		return
 	}
 
 	// ลบไฟล์ภาพเก่าถ้ามีการอัพโหลดภาพใหม่
-	if imageURL != "" {
-		// ดึง URL ภาพเก่าจากฐานข้อมูล
-		var oldImageURL sql.NullString
-		db.QueryRow("SELECT image_url FROM games WHERE id = ?", gameID).Scan(&oldImageURL)
-		if oldImageURL.Valid && oldImageURL.String != "" {
-			oldFilePath := strings.TrimPrefix(oldImageURL.String, "/")
-			// ตรวจสอบว่าไฟล์มีอยู่จริงก่อนลบ
-			if _, err := os.Stat(oldFilePath); err == nil {
-				os.Remove(oldFilePath)
-				fmt.Printf("🗑️ Deleted old image: %s\n", oldFilePath)
-			}
+	if imageURL != "" && oldImageURL.Valid && oldImageURL.String != "" {
+		err := deleteImage(oldImageURL.String)
+		if err != nil {
+			fmt.Printf("⚠️ Error deleting old image: %v\n", err)
+		} else {
+			fmt.Printf("🗑️ Deleted old image: %s\n", oldImageURL.String)
 		}
 	}
 
@@ -508,11 +542,11 @@ func AdminDeleteGameHandler(w http.ResponseWriter, r *http.Request) {
 
 	// ลบไฟล์ภาพถ้ามี
 	if imageURL.Valid && imageURL.String != "" {
-		filePath := strings.TrimPrefix(imageURL.String, "/")
-		// ตรวจสอบว่าไฟล์มีอยู่จริงก่อนลบ
-		if _, err := os.Stat(filePath); err == nil {
-			os.Remove(filePath)
-			fmt.Printf("🗑️ Deleted game image: %s\n", filePath)
+		err := deleteImage(imageURL.String)
+		if err != nil {
+			fmt.Printf("⚠️ Error deleting game image: %v\n", err)
+		} else {
+			fmt.Printf("🗑️ Deleted game image: %s\n", imageURL.String)
 		}
 	}
 
