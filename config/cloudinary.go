@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -68,13 +69,16 @@ func UploadImageFromBytes(fileBytes []byte, fileName string) (string, error) {
 
 	ctx := context.Background()
 
-	uploadResult, err := Cld.Upload.Upload(ctx, fileBytes, uploader.UploadParams{
+	// ✅ แก้ไข: ใช้ io.Reader แทน []byte
+	fileReader := bytes.NewReader(fileBytes)
+
+	uploadResult, err := Cld.Upload.Upload(ctx, fileReader, uploader.UploadParams{
 		Folder:   "game-store",
 		PublicID: fileName,
 	})
 
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cloudinary upload error: %v", err)
 	}
 
 	fmt.Printf("✅ Image uploaded to Cloudinary: %s\n", uploadResult.SecureURL)
