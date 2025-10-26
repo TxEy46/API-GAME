@@ -57,6 +57,7 @@ func AdminDiscountHandler(w http.ResponseWriter, r *http.Request) {
 func getAllDiscounts(w http.ResponseWriter, r *http.Request) {
 	// เรียกตรวจสอบอัตโนมัติก่อนดึงข้อมูล (รันใน goroutine เพื่อไม่ให้ block request)
 	go autoDeactivateDiscounts()
+	go autoDeleteAllExpiredAndInactiveDiscounts()
 	fmt.Println("🔍 Fetching all discount codes")
 
 	// ดึงข้อมูลส่วนลดทั้งหมดพร้อมจำนวนการใช้งาน
@@ -437,7 +438,7 @@ func updateDiscountWithReset(w http.ResponseWriter, r *http.Request, id int) {
 	}, http.StatusOK)
 }
 
-// DELETE /admin/discounts/{id} - ลบส่วนลด + ลบประวัติการใช้งาน
+// DELETE /admin/discounts/{id} - ลบส่วนลด + ลบประวัติการใช้งานทั้งหมด
 func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 	fmt.Printf("🗑️ Deleting discount code with cleanup: ID=%d\n", id)
 
@@ -448,7 +449,17 @@ func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 		return
 	}
 
-	// 1. ลบประวัติการใช้งานใน user_discount_codes ก่อน
+	// 1. ลบข้อมูลใน purchases ที่ใช้ discount นี้ก่อน
+	_, err = tx.Exec("UPDATE purchases SET discount_code_id = NULL WHERE discount_code_id = ?", id)
+	if err != nil {
+		tx.Rollback()
+		fmt.Printf("❌ Error updating purchases: %v\n", err)
+		utils.JSONError(w, "Error updating related purchases", http.StatusInternalServerError)
+		return
+	}
+	fmt.Printf("✅ Updated purchases for discount ID: %d\n", id)
+
+	// 2. ลบประวัติการใช้งานใน user_discount_codes
 	_, err = tx.Exec("DELETE FROM user_discount_codes WHERE discount_code_id = ?", id)
 	if err != nil {
 		tx.Rollback()
@@ -458,7 +469,7 @@ func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 	}
 	fmt.Printf("✅ Deleted usage history for discount ID: %d\n", id)
 
-	// 2. ลบ discount code
+	// 3. ลบ discount code
 	result, err := tx.Exec("DELETE FROM discount_codes WHERE id = ?", id)
 	if err != nil {
 		tx.Rollback()
@@ -487,49 +498,183 @@ func deleteDiscountWithCleanup(w http.ResponseWriter, r *http.Request, id int) {
 	utils.JSONResponse(w, map[string]interface{}{
 		"message":      "Discount code deleted successfully",
 		"id":           id,
-		"cleanup_done": true, // บอกว่าทำการลบประวัติการใช้งานแล้ว
+		"cleanup_done": true,
 	}, http.StatusOK)
 }
 
-// ฟังก์ชันสำหรับตรวจสอบและปิดใช้งานส่วนลดที่ครบจำนวนอัตโนมัติ
+// ฟังก์ชันสำหรับตรวจสอบและลบส่วนลดที่ inactive อัตโนมัติ
 func autoDeactivateDiscounts() {
-	fmt.Println("🔄 Checking for discount codes to deactivate...")
+	fmt.Println("🔄 Checking for inactive discount codes to delete...")
 
-	// ค้นหาส่วนลดที่ใช้งานครบจำนวนแล้ว
+	// ค้นหาส่วนลดที่ inactive (active = 0)
 	rows, err := db.Query(`
-        SELECT dc.id, dc.usage_limit, COUNT(udc.id) as usage_count
+        SELECT dc.id, dc.code, dc.usage_limit, COUNT(udc.id) as usage_count
         FROM discount_codes dc
         LEFT JOIN user_discount_codes udc ON dc.id = udc.discount_code_id
-        WHERE dc.active = 1 AND dc.usage_limit IS NOT NULL
+        WHERE dc.active = 0
         GROUP BY dc.id
-        HAVING usage_count >= dc.usage_limit
     `)
 	if err != nil {
-		fmt.Printf("❌ Error checking discount deactivation: %v\n", err)
+		fmt.Printf("❌ Error checking inactive discounts: %v\n", err)
 		return
 	}
 	defer rows.Close()
 
-	var deactivatedCount int
-	// อ่านข้อมูลส่วนลดที่ต้องปิดใช้งาน
+	var deletedCount int
+
+	// อ่านข้อมูลส่วนลดที่ inactive และลบทิ้ง
 	for rows.Next() {
 		var discountID int
-		var usageLimit, usageCount int
-		err := rows.Scan(&discountID, &usageLimit, &usageCount)
+		var discountCode string
+		var usageLimit sql.NullInt64
+		var usageCount int
+
+		err := rows.Scan(&discountID, &discountCode, &usageLimit, &usageCount)
 		if err != nil {
 			continue
 		}
 
-		// ปิดใช้งานส่วนลด
-		_, err = db.Exec("UPDATE discount_codes SET active = 0 WHERE id = ?", discountID)
-		if err == nil {
-			fmt.Printf("🚫 Auto-deactivated discount: ID=%d, usage %d/%d\n",
-				discountID, usageCount, usageLimit)
-			deactivatedCount++
+		// เริ่ม transaction สำหรับการลบ
+		tx, err := db.Begin()
+		if err != nil {
+			fmt.Printf("❌ Error starting transaction for discount ID %d: %v\n", discountID, err)
+			continue
 		}
+
+		// 1. อัพเดท purchases ที่ใช้ discount นี้ให้เป็น NULL
+		_, err = tx.Exec("UPDATE purchases SET discount_code_id = NULL WHERE discount_code_id = ?", discountID)
+		if err != nil {
+			tx.Rollback()
+			fmt.Printf("❌ Error updating purchases for discount ID %d: %v\n", discountID, err)
+			continue
+		}
+
+		// 2. ลบประวัติการใช้งานใน user_discount_codes
+		_, err = tx.Exec("DELETE FROM user_discount_codes WHERE discount_code_id = ?", discountID)
+		if err != nil {
+			tx.Rollback()
+			fmt.Printf("❌ Error deleting usage history for discount ID %d: %v\n", discountID, err)
+			continue
+		}
+
+		// 3. ลบ discount code
+		_, err = tx.Exec("DELETE FROM discount_codes WHERE id = ?", discountID)
+		if err != nil {
+			tx.Rollback()
+			fmt.Printf("❌ Error deleting discount code ID %d: %v\n", discountID, err)
+			continue
+		}
+
+		// ยืนยัน transaction
+		if err := tx.Commit(); err != nil {
+			fmt.Printf("❌ Error committing transaction for discount ID %d: %v\n", discountID, err)
+			continue
+		}
+
+		fmt.Printf("🗑️ Auto-deleted inactive discount: ID=%d, Code=%s, Usage=%d\n",
+			discountID, discountCode, usageCount)
+		deletedCount++
 	}
 
-	if deactivatedCount > 0 {
-		fmt.Printf("✅ Auto-deactivated %d discount codes\n", deactivatedCount)
+	if deletedCount > 0 {
+		fmt.Printf("✅ Auto-deleted %d inactive discount codes\n", deletedCount)
+	} else {
+		fmt.Println("✅ No inactive discount codes to delete")
+	}
+}
+
+// ฟังก์ชันสำหรับลบส่วนลดทั้งหมดที่ควรลบ (inactive, หมดอายุ, ใช้ครบ)
+func autoDeleteAllExpiredAndInactiveDiscounts() {
+	fmt.Println("🔄 Checking for all discount codes to delete...")
+
+	// ค้นหาส่วนลดที่ควรลบทั้งหมด (inactive, หมดอายุ, หรือใช้ครบ)
+	rows, err := db.Query(`
+        SELECT dc.id, dc.code, dc.active, 
+               DATE_FORMAT(dc.end_date, '%Y-%m-%d') as end_date,
+               dc.usage_limit, COUNT(udc.id) as usage_count
+        FROM discount_codes dc
+        LEFT JOIN user_discount_codes udc ON dc.id = udc.discount_code_id
+        WHERE dc.active = 0 
+           OR (dc.end_date IS NOT NULL AND dc.end_date < CURDATE())
+           OR (dc.usage_limit IS NOT NULL AND dc.active = 1)
+        GROUP BY dc.id
+        HAVING dc.active = 0 
+           OR (dc.end_date IS NOT NULL AND dc.end_date < CURDATE())
+           OR (dc.usage_limit IS NOT NULL AND usage_count >= dc.usage_limit)
+    `)
+	if err != nil {
+		fmt.Printf("❌ Error checking discounts to delete: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	var deletedCount int
+	var inactiveCount int
+	var expiredCount int
+	var usageLimitCount int
+
+	// อ่านข้อมูลส่วนลดที่ต้องลบ
+	for rows.Next() {
+		var discountID int
+		var discountCode string
+		var active bool
+		var endDate sql.NullString
+		var usageLimit sql.NullInt64
+		var usageCount int
+
+		err := rows.Scan(&discountID, &discountCode, &active, &endDate, &usageLimit, &usageCount)
+		if err != nil {
+			continue
+		}
+
+		// ตรวจสอบเหตุผลที่ต้องลบ
+		reason := ""
+		if !active {
+			reason = "inactive"
+			inactiveCount++
+		} else if endDate.Valid {
+			if endTime, _ := time.Parse("2006-01-02", endDate.String); endTime.Before(time.Now()) {
+				reason = "expired"
+				expiredCount++
+			}
+		} else if usageLimit.Valid && usageCount >= int(usageLimit.Int64) {
+			reason = "usage limit reached"
+			usageLimitCount++
+		}
+
+		// เริ่ม transaction สำหรับการลบ
+		tx, err := db.Begin()
+		if err != nil {
+			continue
+		}
+
+		// 1. อัพเดท purchases ที่ใช้ discount นี้ให้เป็น NULL
+		tx.Exec("UPDATE purchases SET discount_code_id = NULL WHERE discount_code_id = ?", discountID)
+
+		// 2. ลบประวัติการใช้งานใน user_discount_codes
+		tx.Exec("DELETE FROM user_discount_codes WHERE discount_code_id = ?", discountID)
+
+		// 3. ลบ discount code
+		_, err = tx.Exec("DELETE FROM discount_codes WHERE id = ?", discountID)
+		if err != nil {
+			tx.Rollback()
+			continue
+		}
+
+		// ยืนยัน transaction
+		if err := tx.Commit(); err != nil {
+			continue
+		}
+
+		fmt.Printf("🗑️ Auto-deleted discount: ID=%d, Code=%s, Reason=%s\n",
+			discountID, discountCode, reason)
+		deletedCount++
+	}
+
+	if deletedCount > 0 {
+		fmt.Printf("✅ Auto-deleted %d discount codes (inactive: %d, expired: %d, usage limit: %d)\n",
+			deletedCount, inactiveCount, expiredCount, usageLimitCount)
+	} else {
+		fmt.Println("✅ No discount codes to delete")
 	}
 }
