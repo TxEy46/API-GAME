@@ -106,20 +106,23 @@ func main() {
 	// --------------------------
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{
-			"http://localhost:4200", // อนุญาตให้เรียกจาก Angular development server
+			"http://localhost:4200",
+			"https://game-shop-web.onrender.com",
 		},
 		AllowedMethods: []string{
-			"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", // อนุญาต methods ที่ใช้
+			"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH",
 		},
 		AllowedHeaders: []string{
-			"*", // อนุญาตทุก headers หรือระบุเฉพาะเช่น "Content-Type", "Authorization"
+			"Content-Type",
+			"Authorization",
 		},
-		AllowCredentials: true, // อนุญาตการส่ง credentials (cookies, authentication)
-		Debug:            true, // ตั้งเป็น false ใน production
+		AllowCredentials: true,
+		Debug:            false,
 	})
 
 	// Wrap the default handler with CORS
 	handler := c.Handler(http.DefaultServeMux)
+	log.Fatal(http.ListenAndServe(":8080", handler))
 
 	// --------------------------
 	// Start Server
